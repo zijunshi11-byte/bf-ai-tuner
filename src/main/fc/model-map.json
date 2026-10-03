@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Local flight-controller model map.",
+    "",
+    "This file ships EMPTY on purpose. An unknown board is not guessed at: it",
+    "drops to SAFE MODE (read-only analysis, no PID/filter writes) and its",
+    "measured capabilities are recorded in model-map.local.json next to the",
+    "user data, so the next connection starts better informed.",
+    "",
+    "Entries are keyed by BOARD IDENTIFIER (the 4-character id from",
+    "MSP_BOARD_INFO, e.g. the 'S405' in 'Board S405'). Only add an entry once",
+    "you have verified it against real hardware; a wrong entry removes a real",
+    "safety net. Set verified=true only after confirming on the bench.",
+    "",
+    "Because entries here are trusted, every field is optional but the more",
+    "you fill in, the more the analysis engine can pre-empt:",
+    "  name           human-readable board name",
+    "  target         Betaflight build target",
+    "  mcu            MCU family, e.g. STM32F405",
+    "  gyro           gyro part, e.g. ICM42688P",
+    "  gyroRateHz     gyro sample rate (8000 | 4000 | 3200)",
+    "  defaultLoop    '8k/8k' | '4k/4k' | '2k/2k'",
+    "  flashMB        onboard blackbox flash size in MiB (0 if none)",
+    "  notes          free text surfaced in the UI",
+    "  knownIssues    array of strings surfaced as warnings",
+    "  verified       boolean - true only after bench confirmation"
+  ],
+
+  "_examples": {
+    "XXXX": {
+      "name": "Example 5-inch racing FC",
+      "target": "STM32F405",
+      "mcu": "STM32F405",
+      "gyro": "ICM42688P",
+      "gyroRateHz": 8000,
+      "defaultLoop": "8k/8k",
+      "flashMB": 16,
+      "notes": "Template entry - replace with verified data before relying on it.",
+      "knownIssues": [],
+      "verified": false
+    }
+  },
+
+  "version": 1,
+  "models": {}
+}

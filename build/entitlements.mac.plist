@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Entitlements for the main "BF AI Tuner" executable (hardened runtime).
+
+		Referenced from electron-builder.yml as `mac.entitlements`.
+		The child-process / helper variant with the identical key set lives in
+		build/entitlements.mac.inherit.plist (`mac.entitlementsInherit`).
+	-->
+
+	<!-- V8 needs writable-executable pages. Without allow-jit the renderer and
+	     the main process abort at startup under the hardened runtime. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- Electron/Node still map unsigned executable memory in a few paths
+	     (JIT-less fallbacks, some native addons). Harmless, widely required. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- Node reads DYLD_* variables; the hardened runtime strips them unless
+	     this is granted. Needed so native addons resolve their dylibs. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+
+	<!-- REQUIRED for `serialport`. The native binding is unpacked out of the
+	     asar (see asarUnpack) and is signed by a different team or not at all,
+	     so library validation must be disabled or dlopen() fails with
+	     "code signature invalid" / "not valid for use in process". -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- USB CDC serial access for the flight controller link.
+	     These two are App Sandbox entitlements: this build does NOT enable
+	     com.apple.security.app-sandbox, so a normal non-sandboxed process opens
+	     /dev/cu.usbmodem* directly (mode crw-rw-rw-, root:wheel). They are
+	     declared so the app keeps working if the sandbox is ever switched on. -->
+	<key>com.apple.security.device.serial</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+</dict>
+</plist>

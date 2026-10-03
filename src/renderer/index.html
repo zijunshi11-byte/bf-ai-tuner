@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BF AI Tuner · 黑匣子调参控制台</title>
+    <!--
+      Offline by construction. No remote origin is reachable from this document;
+      `file:` stays an explicit scheme source so the module graph resolves when
+      the page itself is loaded from disk. Style is inline-capable only because
+      meters write CSS custom properties; there is no inline <script> anywhere.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-panels">跳到主面板 / Skip to main panel</a>
+
+    <header class="appbar">
+      <div class="appbar-title">
+        <span class="brand">BF&nbsp;AI&nbsp;TUNER</span>
+        <span class="brand-sub">黑匣子调参控制台 / Blackbox tuning console</span>
+      </div>
+      <div class="appbar-meta">
+        <span id="app-info" class="chip mono" title="应用信息">…</span>
+        <span id="preload-state" class="chip chip-crit" hidden>preload 未就绪 / window.bf missing</span>
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav class="rail" aria-label="工作流步骤 / Workflow steps">
+        <ol class="rail-list" id="rail-list">
+          <li>
+            <button type="button" class="step" data-step="0" aria-current="step">
+              <span class="step-no mono" aria-hidden="true">1</span>
+              <span class="step-text">
+                <span class="step-zh">连接</span>
+                <span class="step-en">Connect</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">●</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="1">
+              <span class="step-no mono" aria-hidden="true">2</span>
+              <span class="step-text">
+                <span class="step-zh">飞控识别</span>
+                <span class="step-en">Identify</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="2">
+              <span class="step-no mono" aria-hidden="true">3</span>
+              <span class="step-text">
+                <span class="step-zh">双向DShot&amp;RPM</span>
+                <span class="step-en">Bidir DShot</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="3">
+              <span class="step-no mono" aria-hidden="true">4</span>
+              <span class="step-text">
+                <span class="step-zh">黑匣子 2k</span>
+                <span class="step-en">Blackbox</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="4">
+              <span class="step-no mono" aria-hidden="true">5</span>
+              <span class="step-text">
+                <span class="step-zh">飞行采集</span>
+                <span class="step-en">Capture</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="5">
+              <span class="step-no mono" aria-hidden="true">6</span>
+              <span class="step-text">
+                <span class="step-zh">AI分析</span>
+                <span class="step-en">Analysis</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+          <li>
+            <button type="button" class="step" data-step="6">
+              <span class="step-no mono" aria-hidden="true">7</span>
+              <span class="step-text">
+                <span class="step-zh">历史报告</span>
+                <span class="step-en">History</span>
+              </span>
+              <span class="step-mark" aria-hidden="true">○</span>
+            </button>
+          </li>
+        </ol>
+        <p class="rail-foot" id="rail-foot">dry-run 为默认；任何写入都需要显式确认。</p>
+      </nav>
+
+      <main class="panels" id="main-panels" tabindex="-1">
+        <!--
+          Session state bar. Eleven ordered slots (link / model / loop / bidir /
+          RPM / blackbox 2k / backup / fly / log / analysing / written-or-rolled-
+          back). Painted by renderer.js from state the renderer already holds; an
+          unknown slot stays grey rather than showing a guessed value.
+        -->
+        <div class="statebar" id="statebar" aria-label="会话状态 / Session state" aria-live="polite"></div>
+
+        <section class="panel" id="panel-0" data-step="0" aria-labelledby="step-title-0">
+          <header class="panel-head">
+            <h2 id="step-title-0" tabindex="-1">1 · 连接 <span class="panel-en">Connect</span></h2>
+            <p class="panel-sub">选择串口并建立 MSP 会话（115200）。Select a serial port and open an MSP session.</p>
+          </header>
+          <div class="panel-body" id="body-0"></div>
+        </section>
+
+        <section class="panel" id="panel-1" data-step="1" aria-labelledby="step-title-1" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-1" tabindex="-1">2 · 飞控识别 <span class="panel-en">Identify</span></h2>
+            <p class="panel-sub">读取固件 / 板卡指纹、完整 dump 备份与能力探测。Fingerprint the FC, persist a full dump backup, probe capabilities.</p>
+          </header>
+          <div class="panel-body" id="body-1"></div>
+        </section>
+
+        <section class="panel" id="panel-2" data-step="2" aria-labelledby="step-title-2" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-2" tabindex="-1">3 · 双向DShot&amp;RPM <span class="panel-en">Bidir DShot</span></h2>
+            <p class="panel-sub">检测双向 DShot / RPM 遥测状态、每电机转速与建议修复。Probe bidirectional DShot / RPM telemetry and suggested fixes.</p>
+          </header>
+          <div class="panel-body" id="body-2"></div>
+        </section>
+
+        <section class="panel" id="panel-3" data-step="3" aria-labelledby="step-title-3" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-3" tabindex="-1">4 · 黑匣子 2k <span class="panel-en">Blackbox</span></h2>
+            <p class="panel-sub">配置 2 kHz 采样、介质与记录字段；擦除、下载并校验日志。Configure 2 kHz logging, medium and fields; erase, download and verify.</p>
+          </header>
+          <div class="panel-body" id="body-3"></div>
+        </section>
+
+        <section class="panel" id="panel-4" data-step="4" aria-labelledby="step-title-4" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-4" tabindex="-1">5 · 飞行采集 <span class="panel-en">Capture</span></h2>
+            <p class="panel-sub">飞行与动作不限，建议混入多种动作以便分辨滤波与 PID 结论。Fly however you like; varied inputs make filter and PID findings easier to separate.</p>
+          </header>
+          <div class="panel-body" id="body-4"></div>
+        </section>
+
+        <section class="panel" id="panel-5" data-step="5" aria-labelledby="step-title-5" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-5" tabindex="-1">6 · AI分析 <span class="panel-en">Analysis</span></h2>
+            <p class="panel-sub">问题 → 证据 → CLI 建议 → 复飞验证，附 FFT 频谱图。Problem → evidence → CLI → re-fly verification, with FFT spectrum.</p>
+          </header>
+          <div class="panel-body" id="body-5"></div>
+        </section>
+
+        <section class="panel" id="panel-6" data-step="6" aria-labelledby="step-title-6" hidden>
+          <header class="panel-head">
+            <h2 id="step-title-6" tabindex="-1">7 · 历史报告 <span class="panel-en">History</span></h2>
+            <p class="panel-sub">查看已保存的分析报告与建议（只读）。Browse saved analysis reports and proposals (read-only).</p>
+          </header>
+          <div class="panel-body" id="body-6"></div>
+        </section>
+      </main>
+    </div>
+
+    <footer class="statusbar" id="statusbar" aria-live="polite" aria-label="安全状态 / Safety status">
+      <div class="sb-safety" id="sb-safety"></div>
+      <div class="sb-op" id="sb-op" hidden>
+        <span class="sb-op-msg" id="sb-op-msg"></span>
+        <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="当前操作进度">
+          <div class="meter-fill" id="sb-op-fill"></div>
+        </div>
+      </div>
+    </footer>
+
+    <section class="logpanel" id="logpanel" aria-label="事件日志 / Event log">
+      <div class="log-head">
+        <button type="button" class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="log-body">
+          <span class="log-caret" aria-hidden="true">▸</span>
+          <span>事件日志 / Event log</span>
+          <span class="chip mono" id="log-count">0</span>
+        </button>
+        <div class="log-tools">
+          <label class="log-tool-label" for="log-filter">级别</label>
+          <select class="input input-sm" id="log-filter">
+            <option value="all" selected>全部</option>
+            <option value="debug">debug+</option>
+            <option value="info">info+</option>
+            <option value="warn">warn+</option>
+            <option value="error">error+</option>
+          </select>
+          <label class="log-tool-label" for="log-follow">
+            <input type="checkbox" id="log-follow" checked />
+            自动滚动
+          </label>
+          <button type="button" class="btn btn-ghost btn-sm" id="log-clear">清空</button>
+        </div>
+      </div>
+      <div class="log-body" id="log-body" hidden>
+        <ol class="log-list" id="log-list" aria-live="polite" aria-relevant="additions text"></ol>
+      </div>
+    </section>
+
+    <!--
+      First-run permission guidance. Shown once per install by renderer.js: this
+      is an unsigned build, so macOS has no Developer ID to attribute a
+      serial-device prompt to, and a freshly copied app has no privacy record at
+      all. Without this the port list just comes back empty with no explanation.
+    -->
+    <div class="modal-backdrop" id="first-run" hidden>
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="first-run-title"
+        aria-describedby="first-run-body"
+      >
+        <h2 class="modal-title" id="first-run-title">允许 BF-AITuner 访问串口设备</h2>
+
+        <p class="modal-body" id="first-run-body">
+          请在 <strong>系统设置 &gt; 隐私与安全性 &gt; 完全磁盘访问</strong> 中，允许 BF-AITuner 访问串口设备。
+        </p>
+
+        <div class="modal-note">
+          <p>若列表中还没有 BF-AITuner，点击 <strong>+</strong> 后选择：</p>
+          <p class="mono modal-path">/Applications/BF-AITuner.app</p>
+          <p>添加后请<strong>完全退出并重新打开</strong>本应用，权限才会生效。</p>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="first-run-open-settings">打开系统设置</button>
+          <button type="button" class="btn btn-primary" id="first-run-dismiss">我知道了</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

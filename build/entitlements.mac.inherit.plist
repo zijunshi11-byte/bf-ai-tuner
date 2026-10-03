@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Entitlements for child processes and helper executables (the renderer,
+		GPU and plugin helpers, and anything the main process spawns).
+
+		Referenced from electron-builder.yml as `mac.entitlementsInherit`.
+		The key set is intentionally IDENTICAL to
+		build/entitlements.mac.inherit.plist's sibling,
+		build/entitlements.mac.plist: a helper that lacks a parent's
+		entitlement is killed by the hardened runtime at launch, which shows up
+		as a silent crash on startup rather than a useful error.
+	-->
+
+	<!-- V8 JIT in the renderer / helper processes. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- Unsigned executable memory, required by the same V8 paths. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- DYLD_* environment variables survive into helpers. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+
+	<!-- Load the unpacked @serialport/bindings-cpp .node binary, which is not
+	     signed with this app's identity. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- USB CDC serial access, mirroring the main entitlements. -->
+	<key>com.apple.security.device.serial</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+</dict>
+</plist>

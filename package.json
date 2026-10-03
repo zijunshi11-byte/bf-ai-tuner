@@ -1,0 +1,103 @@
+{
+  "name": "bf-ai-tuner",
+  "productName": "BF-AITuner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI tuning assistant for Betaflight 5-inch racing quads: USB CDC serial link, Blackbox .bbl log decoding and FFT analysis.",
+  "license": "GPL-3.0-or-later",
+  "author": "BF AI Tuner contributors",
+  "type": "module",
+  "main": "src/main/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "electron": true,
+    "@serialport/bindings-cpp": true
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "BF_TUNER_DEV=1 electron .",
+    "test": "node --test",
+    "lint:syntax": "find src scripts -type f -name '*.js' -o -type f -name '*.cjs' -o -type f -name '*.mjs' | while IFS= read -r f; do node --check \"$f\" || exit 1; echo \"  ok  $f\"; done && echo 'lint:syntax: every checked file parsed cleanly'",
+    "build:mac:arm64": "electron-builder --mac --arm64",
+    "build:mac:universal": "electron-builder --mac --universal",
+    "build:mac:dir": "electron-builder --mac --arm64 --dir",
+    "postinstall": "electron-builder install-app-deps",
+    "dequarantine": "bash scripts/dequarantine.sh",
+    "build:mac": "bash scripts/build-mac.sh"
+  },
+  "dependencies": {
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.bf.aituner",
+    "productName": "BF-AITuner",
+    "copyright": "GPL-3.0-or-later",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "vendor/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/*.ts",
+      "!**/*.md",
+      "!**/.DS_Store",
+      "!**/.git*/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@serialport/bindings-cpp/**"
+    ],
+    "npmRebuild": true,
+    "afterSign": "scripts/afterSign.cjs",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "minimumSystemVersion": "11.0",
+      "darkModeSupport": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "identity": "-",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "artifactName": "BF-AITuner-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "BF-AITuner ${version}",
+      "artifactName": "BF-AITuner-${version}-${arch}.${ext}",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 140,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}

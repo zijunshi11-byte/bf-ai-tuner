@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# BF AI Tuner - ignore rules
+# ---------------------------------------------------------------------------
+
+# --- Node / Electron -------------------------------------------------------
+node_modules/
+.npm/
+.pnpm-store/
+npm-debug.log*
+yarn-error.log*
+*.log
+logs/
+.electron/
+.electron-builder-cache/
+.cache/
+
+# Native addon build output (rebuilt by `npm run postinstall`).
+build/Release/
+build/Debug/
+prebuilds/
+
+# --- electron-builder output ----------------------------------------------
+dist/
+out/
+release/
+*.dmg
+*.zip
+*.blockmap
+*.pkg
+latest-mac.yml
+builder-debug.yml
+builder-effective-config.yaml
+
+# --- environment / secrets -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.mobileprovision
+
+# --- macOS -----------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.AppleDouble
+.LSOverride
+
+# --- capture data (Blackbox logs are large and usually not redistributable) --
+captures/
+*.bbl
+*.bfl
+*.bbl.gz
+
+# --- editors / tooling -----------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
