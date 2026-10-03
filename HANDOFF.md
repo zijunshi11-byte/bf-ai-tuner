@@ -1,5 +1,9 @@
 # HANDOFF.md — BF-AITuner
 
+> **Using Codex on this project? Read [docs/CODEX.md](docs/CODEX.md) first** — it covers the
+> CLI setup, sandbox configuration, the read-only first-round prompt, and the branch → scope →
+> review → verify → merge workflow.
+
 Handoff notes for whoever picks this up next (Codex or a human). Companion to
 [AGENTS.md](AGENTS.md), which lists the environment and protocol traps — read
 that first; it is not repeated here.
