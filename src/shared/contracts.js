@@ -59,6 +59,7 @@ export const CH = {
   BBL_FFT: 'bbl:fft',
   BBL_METRICS: 'bbl:metrics',
   BBL_PICK_FILE: 'bbl:pick_file',
+  BBL_FLIGHT_CARDS: 'bbl:flight_cards',
 
   // --- tuning ---
   TUNE_PROPOSE: 'tune:propose',
@@ -560,6 +561,13 @@ export const TOOL_SCHEMAS = {
     description: 'Full time+frequency metric report with hardware fault detection.',
     input: { type: 'object', required: ['file'], properties: { file: { type: 'string' } } },
     output: { $ref: 'MetricsReport' },
+  },
+  flight_cards: {
+    channel: CH.BBL_FLIGHT_CARDS,
+    mutates: false,
+    description: 'Guided test flights and the evidence each analysis domain needs (static, no FC).',
+    input: { type: 'object', properties: {} },
+    output: { type: 'object', properties: { cards: { type: 'array' }, needs: { type: 'object' } } },
   },
   propose_tune: {
     channel: CH.TUNE_PROPOSE,

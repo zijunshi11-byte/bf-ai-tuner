@@ -10,6 +10,7 @@
  */
 
 import { CH, TOOL_SCHEMAS } from '../../shared/contracts.js';
+import { EVIDENCE_NEEDS, FLIGHT_CARDS } from '../analysis/evidence.js';
 
 /**
  * @param {import('../session.js').Session} session
@@ -142,6 +143,8 @@ export function createHandlers(session, ctx = {}) {
       if (!file) throw new Error('a .bbl file path is required');
       return session.computeMetrics(file);
     },
+
+    [CH.BBL_FLIGHT_CARDS]: async () => ({ cards: FLIGHT_CARDS, needs: EVIDENCE_NEEDS }),
 
     /* ---------------- tuning ---------------- */
 

@@ -235,8 +235,8 @@ const DEVICE_LABEL = {
 };
 
 const MATCH_LEVEL_TONE = { exact: 'ok', board: 'info', family: 'warn', unknown: 'crit' };
-const CATEGORY_LABEL = { pid: 'PID', filter: '滤波器 / filter', hardware: '硬件 / hardware', none: '无需改动 / none' };
-const CATEGORY_TONE = { pid: 'info', filter: 'info', hardware: 'warn', none: 'idle' };
+const CATEGORY_LABEL = { pid: 'PID', filter: '滤波器 / filter', hardware: '硬件 / hardware', evidence: '证据不足 / evidence', none: '无需改动 / none' };
+const CATEGORY_TONE = { pid: 'info', filter: 'info', hardware: 'warn', evidence: 'warn', none: 'idle' };
 
 /* ================================================================== *
  * 3. State
@@ -373,6 +373,8 @@ const state = {
     single: false,
     checked: new Set(),
   },
+  /** Guided test flights + evidence needs, fetched once from bbl:flight_cards. */
+  flight: { cards: null, needs: null, loading: false, error: null },
   download: { busy: false, progress: null, message: '', path: null, logs: [] },
   file: null,
   metrics: null,
@@ -2774,6 +2776,7 @@ function themeColors() {
     fgDim: get('--fg-dim', '#a9b0b8'),
     fgMute: get('--fg-mute', '#7d858e'),
     accent: get('--accent', '#ffbb00'),
+    ok: get('--ok', '#adf042'),
     warn: get('--warn', '#ff8800'),
     crit: get('--crit', '#e24761'),
   };
@@ -4039,55 +4042,245 @@ function mscCard() {
  * 17. Flight guidance (folded into the analyze page - it has no actions)
  * ================================================================== */
 
-const MANOEUVRES = [
-  { key: 'hover', label: '悬停 5 s', hint: '稳定悬停，观察噪声底 / noise floor' },
-  { key: 'punch', label: '油门急升急收 ×5', hint: 'punch-out，观察 propwash 与 D 项' },
-  { key: 'roll', label: '连续滚转 ×5', hint: 'roll 阶跃响应 / step response' },
-  { key: 'pitch', label: '连续俯仰 ×5', hint: 'pitch 阶跃响应' },
-  { key: 'yaw', label: '偏航急停 ×5', hint: 'yaw 跟踪与 I 项' },
-  { key: 'chop', label: '低油门滑行 / 抛投', hint: 'throttle chop，观察 I 项与电机噪声' },
-];
+/**
+ * Guided test flights, fetched once from the main process (bbl:flight_cards)
+ * so the renderer never carries its own copy of the evidence thresholds.
+ */
+async function loadFlightCards() {
+  if (state.flight.loading || state.flight.cards) return;
+  state.flight.loading = true;
+  const res = await run('读取试飞科目', () => window.bf.bbl.flightCards());
+  state.flight.loading = false;
+  if (!res.ok) {
+    state.flight.error = str(res.error) || '读取失败';
+    return;
+  }
+  const value = res.value && typeof res.value === 'object' ? res.value : {};
+  state.flight.cards = Array.isArray(value.cards) ? value.cards : [];
+  state.flight.needs = value.needs && typeof value.needs === 'object' ? value.needs : null;
+  if (state.step !== undefined) renderStep(state.step);
+}
+
+/** One test-flight card: title, goal, steps; a tick box remembers it was flown. */
+function flightCardEl(c, { needed = false } = {}) {
+  const id = `flight-${str(c?.id)}`;
+  const box = el('input', { type: 'checkbox', id, checked: state.capture.checked.has(c?.id) });
+  box.addEventListener('change', () => {
+    if (box.checked) state.capture.checked.add(c.id);
+    else state.capture.checked.delete(c.id);
+    box.closest('.flight-card')?.classList.toggle('is-checked', box.checked);
+  });
+  const steps = Array.isArray(c?.steps) ? c.steps : [];
+  return el('div', { class: ['flight-card', needed ? 'is-needed' : '', state.capture.checked.has(c?.id) ? 'is-checked' : ''] }, [
+    el('div', { class: 'flight-card-head' }, [
+      box,
+      el('label', { for: id, class: 'flight-card-title', text: str(c?.title) }),
+      needed ? badge('需要补飞', 'warn') : c?.optional ? badge('可选', 'idle') : null,
+    ]),
+    el('p', { class: 'hint', text: str(c?.goal) }),
+    el('ol', { class: 'flight-steps' }, steps.map((t) => el('li', { text: str(t) }))),
+  ]);
+}
 
 /**
- * How to fly, and what to fly.
- *
- * Deliberately advisory: there is no timer and no manoeuvre requirement, and
- * nothing here gates the analysis. This used to be a whole page with no action
- * on it, which only added a click between "configured" and "analysed".
+ * How to fly. There is no timer: each analysis domain needs specific evidence
+ * (stick inputs, throttle chops, high-throttle time, raw gyro) and the
+ * evidence checklist after an analysis says which of these cards to fly.
  */
 function flightGuidanceCard() {
-  const list = el('ol', { class: 'checklist' });
-  for (const m of MANOEUVRES) {
-    const id = `man-${m.key}`;
-    const box = el('input', { type: 'checkbox', id, checked: state.capture.checked.has(m.key) });
-    box.addEventListener('change', () => {
-      if (box.checked) state.capture.checked.add(m.key);
-      else state.capture.checked.delete(m.key);
-      box.closest('li')?.classList.toggle('is-checked', box.checked);
-    });
-    list.append(
-      el('li', { class: state.capture.checked.has(m.key) ? 'is-checked' : '' }, [
-        box,
-        el('label', { for: id }, [el('span', { text: m.label }), el('span', { class: 'man-hint', text: ` — ${m.hint}` })]),
-      ]),
-    );
-  }
+  if (!state.flight.cards && !state.flight.loading && !state.flight.error) loadFlightCards();
+  const cards = Array.isArray(state.flight.cards) ? state.flight.cards : [];
+  const needed = new Set(Array.isArray(state.metrics?.evidence?.flights) ? state.metrics.evidence.flights : []);
+  const core = cards.filter((c) => !c?.optional);
+  const optional = cards.filter((c) => c?.optional);
   return card(
-    '飞行与动作 / How to fly',
+    '试飞科目 / Test flights',
     [
       el('p', {
         class: 'prose',
-        text: '没有时长与动作的强制要求：飞多久、飞什么动作由你决定。以下是让频域与时域分析更稳的建议，做了就勾一下，不做也不影响出结论。',
+        text: '不限飞行时长。每类分析需要特定的数据（打杆、收油门、高油门、原始陀螺），数据够了就能出结论；分析后的「证据清单」会标出还要补飞哪一项。',
       }),
+      cards.length
+        ? el('div', { class: 'flight-cards' }, [...core, ...optional].map((c) => flightCardEl(c, { needed: needed.has(c?.id) })))
+        : el('p', { class: 'hint', text: state.flight.error ? `试飞科目读取失败：${state.flight.error}` : '正在读取试飞科目…' }),
       el('ul', { class: 'evidence' }, [
-        el('li', { text: '混入几种动作（悬停、油门急变、三个轴各打几次杆）能让滤波与 PID 的结论更容易分辨。' }),
-        el('li', { text: '每个动作之间留 2-3 s 稳定悬停，便于自动切分阶跃段；飞行时间越长频谱平均越稳。' }),
         el('li', { text: '不要在室内或有人靠近时解锁；螺旋桨按当地安全规范安装。落地后先上锁再断开电池。' }),
       ]),
-      list,
     ],
-    { badges: [badge('建议项，非强制 / advisory', 'info')] },
+    { badges: [badge(needed.size ? `需补飞 ${needed.size} 项` : '按需飞行 / evidence-driven', needed.size ? 'warn' : 'info')] },
   );
+}
+
+/* ---------------- evidence checklist ---------------- */
+
+const EVIDENCE_ORDER = ['logging', 'steps', 'tracking', 'propwash', 'noise', 'noiseOpen', 'rpm'];
+const AXIS_ZH = { roll: '横滚', pitch: '俯仰', yaw: '偏航' };
+
+/** What the log holds for one domain, in one short line. */
+function evidenceHaveText(key, d) {
+  if (d?.axes && typeof d.axes === 'object') {
+    return ['roll', 'pitch', 'yaw']
+      .filter((a) => d.axes[a])
+      .map((a) => `${AXIS_ZH[a]} ${key === 'tracking' ? fmtNum(d.axes[a].have, 2) : fmtInt(d.axes[a].have)}/${key === 'tracking' ? fmtNum(d.axes[a].need, 2) : fmtInt(d.axes[a].need)}`)
+      .join(' · ');
+  }
+  if (key === 'logging') return `${fmtHz(d?.have?.sampleRateHz)} · gyroUnfilt ${d?.have?.gyroUnfilt ? '有' : '无'}`;
+  if (key === 'rpm') return d?.have ? 'eRPM 有' : 'eRPM 无';
+  if (key === 'noiseOpen') return `${fmtNum(d?.have, 1)} s / 需 ${fmtNum(d?.need, 1)} s`;
+  if (key === 'propwash') return `${fmtInt(d?.have)} 段 / 需 ${fmtInt(d?.need)}`;
+  if (key === 'noise') return `${fmtInt(d?.have)} 段平均 / 需 ${fmtInt(d?.need)}`;
+  return str(d?.have);
+}
+
+function evidenceCard(metrics) {
+  const ev = metrics?.evidence;
+  if (!ev || typeof ev !== 'object' || !ev.domains || typeof ev.domains !== 'object') return null;
+  const keys = EVIDENCE_ORDER.filter((k) => ev.domains[k]);
+  const missing = keys.filter((k) => !ev.domains[k].ok);
+  const rows = keys.map((k) => {
+    const d = ev.domains[k];
+    return el('div', { class: ['evidence-row', d.ok ? 'is-ok' : 'is-short'] }, [
+      badge(d.ok ? '足够' : '不足', d.ok ? 'ok' : 'warn'),
+      el('span', { class: 'evidence-label', text: str(d.label) }),
+      el('span', { class: 'evidence-have mono-num', text: evidenceHaveText(k, d) }),
+      d.ok || !d.advice ? null : el('span', { class: 'evidence-advice hint', text: str(d.advice) }),
+    ]);
+  });
+  const tp = metrics?.throttleProfile;
+  return card(
+    '证据清单 / Evidence',
+    [
+      el('p', {
+        class: 'prose',
+        text: '每类建议只在它所需的数据足够时给出；不足的领域本轮不改参数，只告诉你补飞什么。放宽任何滤波都要求日志里有足够的高油门数据。',
+      }),
+      el('div', { class: 'evidence-grid' }, rows),
+      tp?.available
+        ? el('p', {
+            class: 'hint',
+            text: `油门分布（0–25/25–50/50–75/75–100%）：${(tp.bandsS || []).map((v) => `${fmtNum(v, 1)} s`).join(' / ')}，最高 ${fmtInt(tp.maxPct)}%。`,
+          })
+        : el('p', { class: 'hint', text: '无法识别油门通道的刻度，按「没有高油门数据」处理。' }),
+    ],
+    { badges: [badge(missing.length ? `${keys.length - missing.length}/${keys.length} 足够` : '全部足够', missing.length ? 'warn' : 'ok')] },
+  );
+}
+
+/* ---------------- deconvolved step response plot ---------------- */
+
+const STEP_W = 480;
+const STEP_H = 180;
+
+/** Overlay the three axes' deconvolved step responses (time in ms, unity line). */
+function drawStepPlot(canvas, axes) {
+  if (!canvas) return;
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (!ctx) return;
+  const C = themeColors();
+  canvas.width = STEP_W;
+  canvas.height = STEP_H;
+  const pad = { l: 34, r: 10, t: 10, b: 22 };
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, STEP_W, STEP_H);
+  ctx.font = '9px ui-monospace, Menlo, monospace';
+
+  const series = [
+    ['roll', C.accent],
+    ['pitch', C.ok],
+    ['yaw', C.fgDim],
+  ]
+    .map(([name, color]) => ({ name, color, curve: axes?.[name]?.stepDeconv?.curve }))
+    .filter((s) => s.curve && Array.isArray(s.curve.values) && s.curve.values.length > 1);
+  if (!series.length) {
+    ctx.fillStyle = C.fgMute;
+    ctx.fillText('无打杆数据 / no stick input', 12, STEP_H / 2);
+    return;
+  }
+  let tMin = 0;
+  let tMax = 0;
+  let yMax = 1.2;
+  for (const s of series) {
+    const t0 = num(s.curve.t0Ms) ?? 0;
+    const dt = num(s.curve.dtMs) ?? 1;
+    tMin = Math.min(tMin, t0);
+    tMax = Math.max(tMax, t0 + dt * (s.curve.values.length - 1));
+    for (const v of s.curve.values) yMax = Math.max(yMax, num(v) ?? 0);
+  }
+  yMax = Math.min(2, Math.ceil(yMax * 10) / 10);
+  const yMin = -0.1;
+  const X = (t) => pad.l + ((t - tMin) / Math.max(1e-6, tMax - tMin)) * (STEP_W - pad.l - pad.r);
+  const Y = (v) => pad.t + ((yMax - v) / (yMax - yMin)) * (STEP_H - pad.t - pad.b);
+
+  ctx.strokeStyle = C.line;
+  ctx.fillStyle = C.fgDim;
+  for (let t = 0; t <= tMax; t += 100) {
+    ctx.beginPath();
+    ctx.moveTo(X(t), pad.t);
+    ctx.lineTo(X(t), STEP_H - pad.b);
+    ctx.stroke();
+    ctx.fillText(`${t} ms`, X(t) + 2, STEP_H - 8);
+  }
+  for (const v of [0, 0.5, 1]) {
+    ctx.strokeStyle = v === 1 ? C.fgMute : C.line;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, Y(v));
+    ctx.lineTo(STEP_W - pad.r, Y(v));
+    ctx.stroke();
+    ctx.fillText(v.toFixed(1), 6, Y(v) + 3);
+  }
+  for (const s of series) {
+    const t0 = num(s.curve.t0Ms) ?? 0;
+    const dt = num(s.curve.dtMs) ?? 1;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    s.curve.values.forEach((v, i) => {
+      const x = X(t0 + i * dt);
+      const y = Y(num(v) ?? 0);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  ctx.lineWidth = 1;
+}
+
+function stepResponseCard(metrics) {
+  const axes = metrics?.axes && typeof metrics.axes === 'object' ? metrics.axes : {};
+  const rows = ['roll', 'pitch', 'yaw']
+    .filter((a) => axes[a]?.stepDeconv)
+    .map((a) => {
+      const sd = axes[a].stepDeconv;
+      return metricRow(
+        `${AXIS_ZH[a]} / ${a}`,
+        sd.samples
+          ? `超调 ${fmtPct(sd.overshootPct)} · 50% 延迟 ${fmtMs(sd.delay50Ms)} · 上升 ${fmtMs(sd.riseTimeMs)} · ${fmtInt(sd.samples)} 段打杆`
+          : '打杆不足，未估计',
+      );
+    });
+  if (!rows.length) return null;
+  const canvas = el('canvas', {
+    class: 'step-canvas',
+    attrs: { id: 'step-canvas', width: String(STEP_W), height: String(STEP_H), 'aria-label': '阶跃响应 roll/pitch/yaw' },
+  });
+  return card(
+    '阶跃响应 / Step response',
+    [
+      el('p', {
+        class: 'prose',
+        text: '用 PIDtoolbox 的反卷积方法，从整段飞行的所有打杆中估计 setpoint→gyro 阶跃响应（黄=横滚，绿=俯仰，灰=偏航）。曲线包含前馈作用，所以这里的超调是你手上感到的超调，不能单独作为降 P 的依据。',
+      }),
+      canvas,
+      ...rows,
+    ],
+    { badges: [badge('仅展示 / display only', 'info')] },
+  );
+}
+
+function paintStepPlot() {
+  const canvas = $('#step-canvas');
+  if (!canvas || !canvas.isConnected) return;
+  drawStepPlot(canvas, state.metrics?.axes);
 }
 
 /* ================================================================== *
@@ -4925,7 +5118,7 @@ function renderAnalysis(body) {
         el('p', { class: 'hint', text: '离线分析不需要飞控连接；也可以直接选择已下载的 .bbl 文件。' }),
         el('p', {
           class: 'hint',
-          text: '无时长与动作强制要求；动作越丰富，滤波与 PID 的结论越容易分辨。',
+          text: '不限飞行时长：分析后的「证据清单」会说明数据是否足够，以及还需要补飞哪个科目。',
         }),
       ],
       { badges: [badge(state.file ? 'ready' : 'no file', state.file ? 'ok' : 'idle')] },
@@ -4934,6 +5127,8 @@ function renderAnalysis(body) {
 
   if (metrics) {
     parts.push(metricsReportCard(metrics));
+    const evidence = evidenceCard(metrics);
+    if (evidence) parts.push(evidence);
     if (blockers) {
       parts.push(
         banner('crit', '硬性阻断 / HARD STOP', [
@@ -4954,11 +5149,16 @@ function renderAnalysis(body) {
   if (!metrics) parts.push(evaluationCard());
   // FFT spectrum follows the metrics report (offline, no libraries).
   parts.push(fftCard());
+  if (metrics) {
+    const stepCard = stepResponseCard(metrics);
+    if (stepCard) parts.push(stepCard);
+  }
   // How to fly, folded in here: it used to be its own page with no action on it.
   parts.push(flightGuidanceCard());
 
-  body.append(...parts);
+  body.append(...parts.filter(Boolean));
   paintFft();
+  paintStepPlot();
 }
 
 /* ================================================================== *
@@ -5880,10 +6080,15 @@ if (window.__BF_UI_TEST__) {
     writesBlocked,
     applySafetyPayload,
     renderAllSteps,
+    showStep,
     renderStatusBar,
     refreshGuards,
     decimateSpectrum,
     drawFft,
+    drawStepPlot,
+    evidenceCard,
+    stepResponseCard,
+    flightGuidanceCard,
     drawSparkline,
     recordBidirProbe,
     confirmDiffDialog,

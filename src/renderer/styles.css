@@ -1823,3 +1823,90 @@ textarea.input:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------- evidence checklist + test-flight cards ---------------- */
+
+.evidence-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.evidence-row {
+  display: grid;
+  grid-template-columns: auto minmax(7em, auto) 1fr;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.evidence-row.is-short {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.evidence-label {
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.evidence-have {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.evidence-advice {
+  grid-column: 2 / -1;
+}
+
+.flight-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.flight-card {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.flight-card.is-needed {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+}
+
+.flight-card.is-checked {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+
+.flight-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flight-card-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.flight-steps {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  display: grid;
+  gap: 2px;
+}
+
+.step-canvas {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--code-bg);
+}

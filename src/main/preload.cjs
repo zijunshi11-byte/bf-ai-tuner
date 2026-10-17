@@ -41,6 +41,7 @@ const CH = {
   BBL_FFT: 'bbl:fft',
   BBL_METRICS: 'bbl:metrics',
   BBL_PICK_FILE: 'bbl:pick_file',
+  BBL_FLIGHT_CARDS: 'bbl:flight_cards',
   BB_MSC_ENTER: 'blackbox:msc_enter',
   BB_MSC_STATUS: 'blackbox:msc_status',
   BB_MSC_IMPORT: 'blackbox:msc_import',
@@ -142,6 +143,8 @@ const api = {
     decode: (file) => invoke(CH.BBL_DECODE, { file }),
     fft: (file, axis = null) => invoke(CH.BBL_FFT, { file, axis }),
     metrics: (file) => invoke(CH.BBL_METRICS, { file }),
+    /** Guided test flights + per-domain evidence needs (static data). */
+    flightCards: () => invoke(CH.BBL_FLIGHT_CARDS),
   },
 
   tune: {
