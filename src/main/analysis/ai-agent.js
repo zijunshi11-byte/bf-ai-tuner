@@ -467,6 +467,15 @@ export function buildEvidencePack({
       // Which analysis domains this log can support; a short domain means the
       // rule engine withheld advice there, and so should the model.
       evidenceMissing: m.evidence?.missing ?? null,
+      // Mechanical findings: fix these before any PID/filter change.
+      mechanical: m.mechanical
+        ? {
+            propOutlierMotor: m.mechanical.onceVibration?.outlier ? m.mechanical.onceVibration.outlier.index + 1 : null,
+            propOutlierRatio: m.mechanical.onceVibration?.outlier?.ratioToOthers ?? null,
+            fixedResonancesHz: (m.mechanical.resonance?.resonances || []).map((r) => ({ hz: r.hz, survivesFilter: r.survivesFilter })),
+            movingPeaksHz: (m.mechanical.resonance?.tracking || []).map((t) => t.hz),
+          }
+        : null,
       warnings: L.id === 'compact' ? (m.warnings || []).slice(0, 8) : m.warnings || [],
     },
     faults: (m.faults || []).map((f) => ({
@@ -648,6 +657,7 @@ export const AI_SYSTEM_PROMPT = `你是一名 5 寸竞速穿越机（Betaflight 
 10. 如果输入包里有 blackboxHeader（完整飞控配置），可据此核对 PID/滤波/TPA/RPM 设置是否互相矛盾；但只能建议上面白名单里的参数。
 11. log.evidenceMissing 列出本日志证据不足的分析领域（steps/tracking/propwash/noise/noiseOpen/rpm/logging）。这些领域不要给改参建议，只说明需要补飞什么；包含 noiseOpen 时绝不建议放宽任何滤波（提高低通截止、减少陷波/RPM 谐波）。
 12. axes.*.stepDeconv 是反卷积得到的 setpoint→gyro 阶跃响应，包含前馈作用：其中的超调不能单独作为降 P 的依据。
+13. log.mechanical.movingPeaksHz 里的峰随电机转速移动：不要为它们建议静态陷波（gyro_notch*），那是 RPM 滤波/动态陷波的工作；fixedResonancesHz 才适合静态陷波。propOutlierMotor 非空时先让用户检查该电机的桨与轴。
 
 只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码块。格式：
 {

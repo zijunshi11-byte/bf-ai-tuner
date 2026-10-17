@@ -317,7 +317,8 @@ export const EVENT_KIND = [
  * @typedef {object} Fault
  * @property {string} code     GYRO_CLIPPING | MOTOR_DESYNC | SEVERE_VIBRATION |
  *                             FRAME_DROP_HIGH | SAMPLE_RATE_MISMATCH |
- *                             NO_RPM_DATA | MOTOR_SATURATION | GYRO_ABSENT | LOG_TRUNCATED
+ *                             NO_RPM_DATA | MOTOR_SATURATION | GYRO_ABSENT | LOG_TRUNCATED |
+ *                             PROP_IMBALANCE (warn, carries `motor`) | FRAME_RESONANCE (info/warn)
  * @property {'info'|'warn'|'critical'} severity
  * @property {string} evidence  concrete numbers, never a bare claim
  * @property {boolean} blocksTuning  true => AI must refuse to propose PID changes
@@ -342,6 +343,8 @@ export const EVENT_KIND = [
  * @property {{available:boolean, bandsS:number[], bandsPct:number[], highS:number, maxPct:number}} [throttleProfile]
  * @property {{domains:Record<string,{ok:boolean,label:string,have:any,need:any,axes?:object,advice:string}>,
  *             missing:string[], flights:string[]}} [evidence]
+ * @property {{onceVibration:object|null, resonance:object|null}} [mechanical]
+ *           per-motor 1x vibration + fixed-vs-moving resonance (analysis/mechanical.js)
  *           per-domain evidence sufficiency (analysis/evidence.js); replaces a duration gate
  */
 

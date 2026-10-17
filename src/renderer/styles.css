@@ -1910,3 +1910,29 @@ textarea.input:disabled {
   border-radius: 8px;
   background: var(--code-bg);
 }
+
+/* ---------------- mechanical health ---------------- */
+
+.motor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 6px;
+}
+
+.motor-cell {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.motor-cell.is-outlier {
+  border-color: color-mix(in srgb, var(--warn) 60%, var(--line));
+}
+
+.motor-name {
+  font-weight: 600;
+  font-size: 12.5px;
+}

@@ -4166,6 +4166,68 @@ function evidenceCard(metrics) {
   );
 }
 
+/* ---------------- mechanical health ---------------- */
+
+function mechanicalCard(metrics) {
+  const mech = metrics?.mechanical;
+  if (!mech || typeof mech !== 'object') return null;
+  const once = mech.onceVibration;
+  const reso = mech.resonance;
+  const parts = [
+    el('p', {
+      class: 'prose',
+      text: '这些是改参数解决不了的问题：先修机械，再调 PID/滤波。单个电机的一阶（每转一次）振动偏大通常是桨不平衡/桨损或弯轴；在各个转速档都不动的峰是机架/机臂/飞塔共振，随转速移动的峰是电机噪声。',
+    }),
+  ];
+
+  if (once?.available) {
+    const motors = Array.isArray(once.motors) ? once.motors : [];
+    const outlierIndex = once.outlier ? once.outlier.index : -1;
+    parts.push(el('span', { class: 'field-label', text: '单电机一阶振动 / per-motor 1x' }));
+    parts.push(
+      el('div', { class: 'motor-grid' }, motors.map((m) =>
+        el('div', { class: ['motor-cell', m.index === outlierIndex ? 'is-outlier' : ''] }, [
+          el('span', { class: 'motor-name', text: `M${fmtInt(m.index + 1)}` }),
+          el('span', { class: 'mono-num', text: m.amplitudeDps === null || m.amplitudeDps === undefined ? '—' : `${fmtNum(m.amplitudeDps, 2)} °/s` }),
+          el('span', { class: 'hint', text: num(m.ratioToOthers) === null ? `${fmtInt(m.windows)} 窗` : `×${fmtNum(m.ratioToOthers, 2)} · SNR ${fmtNum(m.snr, 1)} · ${fmtHz(m.meanHz)}` }),
+        ]),
+      )),
+    );
+    parts.push(
+      once.outlier
+        ? banner('warn', `M${once.outlier.index + 1} 一阶振动偏大`, [para(`是其他电机中位数的 ×${fmtNum(once.outlier.ratioToOthers, 2)}（阈值 ×1.8）。落地后检查该电机的桨（缺口、变形、装反）与电机轴，换桨后复飞对比。`)])
+        : el('p', { class: 'hint', text: '没有单个电机明显偏大（阈值：其他电机中位数的 ×1.8 且信噪比 ≥ 2.5）。' }),
+    );
+  } else {
+    parts.push(el('p', { class: 'hint', text: `单电机一阶振动：无法评估 — ${str(once?.reason) || '数据不足'}` }));
+  }
+
+  if (reso?.available) {
+    const unit = reso.speedUnit === 'hz' ? '电机转速' : '油门';
+    const fmtSpeed = (v) => (reso.speedUnit === 'hz' ? fmtHz(v) : fmtPct((num(v) ?? 0) * 100, 0));
+    parts.push(el('span', { class: 'field-label', text: `共振分类（按${unit}分 ${fmtInt(reso.bands?.length)} 档）/ resonance` }));
+    parts.push(
+      el('ul', { class: 'evidence' }, (reso.bands || []).map((b) =>
+        el('li', { text: `${unit} ${fmtSpeed(b.speed)}：原始陀螺峰 ${(b.peakHz || []).map((h) => `${h} Hz`).join('、') || '无'}` }),
+      )),
+    );
+    const fixed = reso.resonances || [];
+    const moving = reso.tracking || [];
+    parts.push(
+      el('div', { class: 'chips' }, [
+        ...fixed.map((r) => chip(`固定 ${r.hz} Hz · ${fmtNum(r.prominenceDb, 1)} dB${r.survivesFilter ? ' · 滤波后仍残留' : ''}`, r.survivesFilter ? 'warn' : 'idle')),
+        ...moving.map((t) => chip(`随转速移动 ${t.hz} Hz`, 'info')),
+      ]),
+    );
+    if (!fixed.length && !moving.length) parts.push(el('p', { class: 'hint', text: '没有足够显著、可分类的峰。' }));
+  } else {
+    parts.push(el('p', { class: 'hint', text: `共振分类：无法评估 — ${str(reso?.reason) || '数据不足'}` }));
+  }
+
+  const flagged = Boolean(once?.outlier) || (reso?.resonances || []).some((r) => r.survivesFilter);
+  return card('机械健康 / Mechanical', parts, { badges: [badge(flagged ? '需检查' : '未见异常', flagged ? 'warn' : 'ok')] });
+}
+
 /* ---------------- deconvolved step response plot ---------------- */
 
 const STEP_W = 480;
@@ -5129,6 +5191,8 @@ function renderAnalysis(body) {
     parts.push(metricsReportCard(metrics));
     const evidence = evidenceCard(metrics);
     if (evidence) parts.push(evidence);
+    const mechanical = mechanicalCard(metrics);
+    if (mechanical) parts.push(mechanical);
     if (blockers) {
       parts.push(
         banner('crit', '硬性阻断 / HARD STOP', [
@@ -6087,6 +6151,7 @@ if (window.__BF_UI_TEST__) {
     drawFft,
     drawStepPlot,
     evidenceCard,
+    mechanicalCard,
     stepResponseCard,
     flightGuidanceCard,
     drawSparkline,

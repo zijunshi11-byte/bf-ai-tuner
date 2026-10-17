@@ -35,6 +35,8 @@ import { readCraftSettings } from './header-settings.js';
 import { recommendAxis } from './transfer-tune.js';
 import { assessEvidence, throttleProfile } from './evidence.js';
 import { deconvolveStepResponse } from './step-deconv.js';
+import { classifyResonances, perMotorOnceVibration, rotationHz } from './mechanical.js';
+import { normaliseThrottle } from './evidence.js';
 
 /** Betaflight logs `eRPM[n]` as electrical RPM / 100 (upstream viewer: rpm = value * 200 / motor_poles). */
 const BLACKBOX_ERPM_SCALE = 100;
@@ -816,6 +818,7 @@ function fault(code, severity, evidence, extra = {}) {
     severity,
     evidence,
     blocksTuning: BLOCKING_FAULTS.has(code) || extra.blocksTuning === true,
+    ...(Number.isInteger(extra.motor) ? { motor: extra.motor } : {}),
   };
 }
 
@@ -840,6 +843,47 @@ function dominantHighFrequencyPeak(spectrum, minHz = 150, floorFactor = 4) {
   if (bestIndex < 0) return 0;
   if (median > 0 && psd[bestIndex] < floorFactor * median) return 0;
   return round(freqs[bestIndex], 1);
+}
+
+/**
+ * Mechanical findings for computeMetrics: per-motor once-per-revolution
+ * vibration (needs eRPM) and fixed-vs-moving resonance classification (eRPM
+ * speed when present, throttle otherwise). Raw gyro is preferred: the filters
+ * would hide exactly the components being looked for.
+ */
+function analyseMechanical(log, { gyroScale, sampleRateHz, polePairs, erpm, axes }) {
+  if (!sampleRateHz) return { onceVibration: null, resonance: null };
+  const gyroFor = (axis) => {
+    const raw = readChannel(log, 'gyroUnfilt', axis) || readChannel(log, 'gyroADC', axis);
+    return raw ? toFloat(raw, gyroScale ?? 1) : null;
+  };
+  const gyros = [gyroFor(0), gyroFor(1)].filter(Boolean);
+  if (!gyros.length) return { onceVibration: null, resonance: null };
+
+  const onceVibration = erpm.length >= 2
+    ? perMotorOnceVibration({ gyros, erpm, sampleRateHz, polePairs })
+    : { available: false, reason: '没有 eRPM（需双向 DShot）', motors: [], outlier: null };
+
+  let speed = null;
+  let speedUnit = 'hz';
+  if (erpm.length >= 2) {
+    const rots = erpm.map((e) => rotationHz(e, polePairs));
+    const n = Math.min(...rots.map((r) => r.length));
+    speed = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      let sum = 0;
+      for (const r of rots) sum += r[k];
+      speed[k] = sum / rots.length;
+    }
+  } else {
+    speed = normaliseThrottle(readChannel(log, 'throttle'));
+    speedUnit = 'throttle';
+  }
+  const filteredPeaks = [...(axes.roll?.peaks || []), ...(axes.pitch?.peaks || [])];
+  const resonance = speed
+    ? classifyResonances({ gyros, speed, speedUnit, sampleRateHz, filteredPeaks })
+    : { available: false, reason: '缺少转速与油门数据', bands: [], resonances: [], tracking: [] };
+  return { onceVibration, resonance };
 }
 
 /**
@@ -1122,6 +1166,33 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
     faults.push(fault('NO_RPM_DATA', 'info', 'no eRPM[n] channel is present in the log, so RPM harmonic matching is unavailable'));
   }
 
+  /* ---- mechanical health (props, shafts, frame) ---- */
+  const mechanical = analyseMechanical(log, { gyroScale, sampleRateHz, polePairs, erpm, axes });
+  if (mechanical.onceVibration?.outlier) {
+    const o = mechanical.onceVibration.outlier;
+    faults.push(
+      fault(
+        'PROP_IMBALANCE',
+        'warn',
+        `M${o.index + 1} once-per-revolution vibration (${o.meanHz} Hz) is ${o.amplitudeDps} deg/s, ` +
+          `${o.ratioToOthers}x the median of the other motors (threshold 1.8x), SNR ${o.snr}: ` +
+          'unbalanced or chipped prop, or a bent shaft on that motor',
+        { motor: o.index + 1 },
+      ),
+    );
+  }
+  for (const r of mechanical.resonance?.resonances || []) {
+    faults.push(
+      fault(
+        'FRAME_RESONANCE',
+        r.survivesFilter ? 'warn' : 'info',
+        `${r.hz} Hz stays fixed across ${r.bands} motor-speed bands (${r.prominenceDb} dB in the raw gyro)` +
+          (r.survivesFilter ? `, still ${r.filteredProminenceDb} dB after filtering` : ', removed by the current filters') +
+          ': frame / arm / stack resonance, not motor noise',
+      ),
+    );
+  }
+
   const truncatedWarnings = warnings.filter((w) => /^truncated/i.test(w));
   const corruptWarnings = warnings.filter((w) => /^corrupt/i.test(w));
   if (truncatedWarnings.length || corruptWarnings.length) {
@@ -1168,6 +1239,8 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
     craftSettings: readCraftSettings(log.header || {}),
     // Seconds per throttle quarter; opening a filter needs high-throttle time.
     throttleProfile: throttleProfile(readChannel(log, 'throttle'), sampleRateHz),
+    // Per-motor 1x vibration and fixed-vs-moving resonance classification.
+    mechanical,
   };
   // What each analysis domain has to work with (replaces a duration gate).
   report.evidence = assessEvidence(report);

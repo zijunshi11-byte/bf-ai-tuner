@@ -24,6 +24,7 @@ import { STEP_LIMITS, FORBIDDEN_PARAMS } from '../../shared/contracts.js';
 import { noiseFloorDbfs } from './bbl-fft.js';
 import { recommendAxis, TF_TARGETS } from './transfer-tune.js';
 import { evidenceGapProposal, gateProposals } from './evidence.js';
+import { classifyPeak } from './mechanical.js';
 
 /** Axis index -> name. Blackbox axes are roll, pitch, yaw in that order. */
 export const AXES = ['roll', 'pitch', 'yaw'];
@@ -1425,8 +1426,39 @@ function ruleFilterShaping(metrics, pid, filter, opts = {}) {
     }
   }
 
-  if (residual.length) {
-    const worst = residual.reduce((a, b) => (b.db > a.db ? b : a));
+  const residualWorst = residual.length ? residual.reduce((a, b) => (b.db > a.db ? b : a)) : null;
+  // Fixed vs moving (mechanical.js): a static notch can only ever remove a
+  // peak that stays put. A peak that moves with motor speed is motor noise -
+  // a notch parked on today's average frequency misses it most of the flight
+  // and adds delay all of it, so that case gets no diff.
+  const peakKind = residualWorst ? classifyPeak(metrics.mechanical, residualWorst.hz) : 'unknown';
+  const resonanceInfo = (metrics.mechanical?.resonance?.resonances || []).find((r) => Math.abs(r.hz - (residualWorst?.hz ?? 0)) <= Math.max(6, 0.03 * r.hz));
+  const trackingInfo = (metrics.mechanical?.resonance?.tracking || []).find((r) => Math.abs(r.hz - (residualWorst?.hz ?? 0)) <= Math.max(6, 0.03 * r.hz));
+
+  if (residualWorst && peakKind === 'tracking') {
+    const worst = residualWorst;
+    const rpmOn = (Number.isFinite(f.rpmFilterHarmonics) ? f.rpmFilterHarmonics : 0) > 0;
+    const bandsText = (metrics.mechanical.resonance.bands || []).map((b) => `${b.speed} Hz→${(b.peakHz || []).join('/') || '—'}`).join('，');
+    proposals.push({
+      id: 'filter-residual-peak',
+      problem: `滤波后仍有残留峰 - ${worst.axis} 轴 ${worst.hz.toFixed(0)} Hz，但它随电机转速移动，静态陷波不适用`,
+      evidence:
+        `滤波后的 gyroADC 在 ${worst.hz.toFixed(0)} Hz 仍有 ${worst.db.toFixed(1)} dB 峰值（阈值 12 dB）。` +
+        `按电机转速分档对比原始陀螺：${bandsText}（电机平均转速→峰值），该峰约为转速的 ${trackingInfo?.order ?? '?'} 倍，随转速移动。`,
+      cli: [],
+      why: '固定在一个频率的静态陷波只能在很窄的转速范围内命中它，其余时间只增加延迟。随转速移动的噪声应由 RPM 滤波（或动态陷波）跟踪。',
+      verification: rpmOn
+        ? '检查 RPM 滤波是否覆盖到这一阶：rpm_filter_harmonics、rpm_filter_min_hz 与 rpm_filter_q；同时检查桨是否损伤或不平衡（单个电机一阶振动偏大时报告会单独指出）。'
+        : '这是电机转速相关噪声：启用双向 DShot + RPM 滤波是根治方式（本工具不强制，也不会自动写入）；在此之前可依靠动态陷波。',
+      ifNotApplied: '该峰继续传到 PID，增加电机温度与噪声；但用静态陷波去追它会更糟：延迟上升而峰值基本不降。',
+      confidence: confidenceFrom([worst.db / 24, quality]),
+      category: 'filter',
+      safeToApply: false,
+      blockedBy: ['峰值随电机转速移动，静态陷波跟不上'],
+      diff: [],
+    });
+  } else if (residualWorst) {
+    const worst = residualWorst;
     const rpmOn = (Number.isFinite(f.rpmFilterHarmonics) ? f.rpmFilterHarmonics : 0) > 0;
     const notchHz = Number.isFinite(f.gyroNotch1Hz) ? f.gyroNotch1Hz : 0;
     const to = snapHz(worst.hz);
@@ -1439,7 +1471,9 @@ function ruleFilterShaping(metrics, pid, filter, opts = {}) {
         `滤波后的 gyroADC 频谱在 ${worst.hz.toFixed(0)} Hz 仍有 ${worst.db.toFixed(1)} dB 峰值（阈值 12 dB），` +
         `当前滤波链没有压住它。RPM 滤波当前${rpmOn ? '已开启' : '未开启'}，` +
         `静态陷波当前 ${notchHz > 0 ? `${notchHz} Hz` : '未设置'}。` +
-        (worst.harmonic ? '该峰与电机转速谐波吻合。' : '该峰与电机转速谐波不吻合，更像固定频率干扰。'),
+        (peakKind === 'fixed' && resonanceInfo
+          ? `按电机转速分档对比，该峰在 ${resonanceInfo.bands} 个转速档都停在 ${resonanceInfo.hz} Hz 不动，属机架/机臂/飞塔共振——静态陷波正是对症工具；同时检查螺丝、机臂裂纹与电池绑带。`
+          : worst.harmonic ? '该峰与电机转速谐波吻合。' : '该峰与电机转速谐波不吻合，更像固定频率干扰。'),
       cli:
         notchHz > 0 && Math.abs(notchHz - to) <= 10
           ? [`set gyro_notch1_cutoff = ${cutoff}`]
