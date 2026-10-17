@@ -459,7 +459,9 @@ function fmtKb(v) {
 function fmtHz(v) {
   const n = num(v);
   if (n === null || n <= 0) return '—';
-  return n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 2)} kHz` : `${n} Hz`;
+  // Spectral bins land on values like 472.65625 Hz; one decimal is already
+  // finer than any bin, and the long tail wrapped metric rows onto two lines.
+  return n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 2)} kHz` : `${Number.isInteger(n) ? n : n.toFixed(1)} Hz`;
 }
 
 function fmtHzShort(v) {
@@ -912,7 +914,7 @@ function kv(label, value, opts = {}) {
   const valueNode = value instanceof Node ? value : el('span', { class: opts.mono === false ? '' : 'mono-num', text: str(value) });
   const node = el('div', { class: ['kv', opts.class] }, [
     el('span', { class: 'kv-k', text: label }),
-    el('span', { class: ['kv-v', opts.tone ? `tone-${opts.tone}` : ''], style: opts.wrap === false ? { overflowWrap: 'normal' } : undefined }, [valueNode]),
+    el('span', { class: ['kv-v', opts.tone ? `tone-${opts.tone}` : ''], style: opts.wrap === false ? { overflowWrap: 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } : undefined }, [valueNode]),
   ]);
   node.title = value instanceof Node ? '' : str(value);
   return node;

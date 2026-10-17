@@ -1,9 +1,10 @@
 /*
  * BF AI Tuner — renderer stylesheet.
  *
- * Dark, high-contrast, aviation-inspired, system-font only: this console is
- * read next to a quad on a flying field, often in daylight, and must work with
- * zero network access. One coherent sheet: tokens -> layout -> components ->
+ * Apple-style (apple.com / macOS): system font, neutral surfaces, one blue
+ * accent, large rounded cards, pill buttons; the final "Apple layer" section
+ * refines the components. System fonts only - the app must work with zero
+ * network access. One coherent sheet: tokens -> layout -> components ->
  * page specifics. Numeric telemetry (frequencies, RPM, sample rates, latency,
  * percentages) is always rendered in tabular mono via `.mono-num`.
  *
@@ -15,95 +16,90 @@
  * ------------------------------------------------------------------ */
 
 /* ---------------------------------------------------------------------------
- * Theme tokens
+ * Theme tokens — Apple-style (apple.com / macOS system palette).
  *
- * Both themes follow the Betaflight Configurator palette (its src/css/theme.css):
- * the same amber primary (#ffbb00), the same green/orange/red status family, and
- * a neutral surface ramp that INVERTS between themes - surface-50 is the most
- * background-like in light and the least in dark. Text follows BF's --text:
- * black on light, 95% grey on dark.
- *
- * Status colours are used as TEXT far more often than as fills in this app, so
- * the light theme uses BF's darker shades (-600/-700) where dark uses the
- * brighter ones (-400). --accent-fg exists because brand gold on a white
- * surface is only ~1.7:1 and would be unreadable as text.
+ * Neutral greys, one blue accent, colour reserved for status. Dark follows the
+ * macOS dark system palette (#000 / #1c1c1e / #2c2c2e, systemBlue #0a84ff);
+ * light follows apple.com (#f5f5f7 page, white cards, #1d1d1f text, #0071e3
+ * links and buttons). Status colours are used as TEXT far more often than as
+ * fills, so the light theme uses the darker, AA-legible variants.
  * ------------------------------------------------------------------------- */
 :root {
-  --bg: #1a1a1a;         /* app background (BF neutral-900) */
-  --bg-1: #242424;       /* cards (surface-300) */
-  --bg-2: #2b2b2b;       /* raised surface (neutral-850) */
-  --bg-3: #333333;       /* surface-400 */
-  --line: #3d3d3d;       /* surface-500 */
-  --line-2: #595959;     /* surface-600 */
-  --fg: #f2f2f2;         /* BF --text, dark */
-  --fg-dim: #b3b3b3;     /* surface-900 */
-  --fg-mute: #999999;    /* surface-800 */
-  --accent: #ffbb00;     /* primary-500, used for fills */
-  --accent-fg: #ffbb00;  /* primary-500, used for text */
-  --accent-hover: #ffc526;
-  --on-accent: #241a00;  /* text on gold */
-  --ok: #adf042;         /* success-400 */
-  --warn: #ff8533;       /* warning-700 (dark variant) */
-  --crit: #ff4d6d;       /* error-400, lifted so it clears AA as TEXT on dark */
-  --crit-bg: #c81e42;    /* darker red so white button text clears AA */
-  --crit-bg-hover: #b8143a;
-  --info: #6cb4ee;
+  --bg: #000000;
+  --bg-1: #1c1c1e;       /* cards */
+  --bg-2: #2c2c2e;       /* grouped / raised rows inside a card */
+  --bg-3: #3a3a3c;
+  --line: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.18);
+  --fg: #f5f5f7;
+  --fg-dim: #a1a1a6;
+  --fg-mute: #86868b;
+  --accent: #0a84ff;     /* systemBlue (dark) */
+  --accent-fg: #2997ff;  /* apple.com link blue on dark */
+  --accent-hover: #409cff;
+  --on-accent: #ffffff;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --crit: #ff453a;
+  --crit-bg: #ff3b30;
+  --crit-bg-hover: #e0352b;
+  --info: #64d2ff;
   --on-crit: #ffffff;
 
-  /* Surfaces the configurator paints by hand rather than by token. */
-  --appbar-top: #1b2430;
-  --code-bg: #0b0f15;
-  --code-fg: #cfe9f5;
-  --input-bg: #161c25;
-  --log-bg: #0a0d12;
-  --hairline: rgba(255, 255, 255, 0.035);
+  --appbar-top: rgba(22, 22, 23, 0.8);
+  --code-bg: #111113;
+  --code-fg: #e8e8ed;
+  --input-bg: #1c1c1e;
+  --log-bg: #0b0b0c;
+  --hairline: rgba(255, 255, 255, 0.04);
   --hairline-strong: rgba(255, 255, 255, 0.12);
-  --log-info-fg: #cbd6e2;
+  --log-info-fg: #d2d2d7;
   --log-fatal-fg: #ffd9d6;
-  --overlay: rgba(6, 9, 13, 0.72);
-  --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  --radius: 10px;
-  --card-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", sans-serif;
+  --overlay: rgba(0, 0, 0, 0.55);
+  --modal-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  --radius: 18px;
+  --radius-sm: 12px;
+  --card-shadow: none;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue",
+    "PingFang SC", "Hiragino Sans GB", system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
-/* Light theme: same ramp, inverted. Explicitly set by the toggle. */
+/* Light theme (apple.com). Explicitly set by the toggle or by Auto. */
 [data-theme="light"] {
-  --bg: #f2f2f2;         /* surface-200 */
-  --bg-1: #ffffff;       /* surface-50 */
-  --bg-2: #ebebeb;       /* surface-300 */
-  --bg-3: #d6d6d6;       /* surface-400 */
-  --line: #d6d6d6;       /* surface-400 */
-  --line-2: #bfbfbf;     /* surface-500 */
-  --fg: #000000;         /* BF --text, light */
-  --fg-dim: #4d4d4d;     /* surface-900 */
-  --fg-mute: #666666;    /* surface-800 */
-  --accent: #ffbb00;     /* fills stay brand gold */
-  --accent-fg: #a15c00;  /* darker amber: gold is unreadable as text on white */
-  --accent-hover: #ffc526;
-  --on-accent: #241a00;
-  --ok: #4d7a00;         /* success, darkened for legibility on white */
-  --warn: #b34700;       /* warning-700 (light variant) */
-  --crit: #c10f36;       /* error-600 - already AA as text on light */
-  --crit-bg: #c10f36;    /* white on this clears AA too */
-  --crit-bg-hover: #a20c2c;
-  --info: #2f5f9e;
+  --bg: #f5f5f7;
+  --bg-1: #ffffff;
+  --bg-2: #f5f5f7;
+  --bg-3: #e8e8ed;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-2: rgba(0, 0, 0, 0.16);
+  --fg: #1d1d1f;
+  --fg-dim: #6e6e73;
+  --fg-mute: #86868b;
+  --accent: #0071e3;
+  --accent-fg: #0066cc;
+  --accent-hover: #0077ed;
+  --on-accent: #ffffff;
+  --ok: #248a3d;
+  --warn: #b25000;
+  --crit: #d70015;
+  --crit-bg: #e30000;
+  --crit-bg-hover: #c40000;
+  --info: #0071a4;
   --on-crit: #ffffff;
 
-  --appbar-top: #ffffff;
-  --code-bg: #f6f6f6;
-  --code-fg: #1f1f1f;
+  --appbar-top: rgba(251, 251, 253, 0.8);
+  --code-bg: #f5f5f7;
+  --code-fg: #1d1d1f;
   --input-bg: #ffffff;
-  --log-bg: #fafafa;
-  --hairline: rgba(0, 0, 0, 0.06);
-  --hairline-strong: rgba(0, 0, 0, 0.15);
-  --log-info-fg: #333333;
+  --log-bg: #fbfbfd;
+  --hairline: rgba(0, 0, 0, 0.04);
+  --hairline-strong: rgba(0, 0, 0, 0.12);
+  --log-info-fg: #424245;
   --log-fatal-fg: #8f1029;
-  --overlay: rgba(40, 40, 40, 0.45);
-  --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
-  --card-shadow: 0 4px 18px rgba(0, 0, 0, 0.10);
+  --overlay: rgba(0, 0, 0, 0.32);
+  --modal-shadow: 0 30px 80px rgba(0, 0, 0, 0.18);
+  --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
 }
 
 *,
@@ -2058,4 +2054,683 @@ textarea.input:disabled {
   gap: 8px;
   padding: 4px 0;
   border-bottom: 1px dashed var(--line);
+}
+
+/* ================================================================== *
+ * Apple layer
+ *
+ * apple.com / macOS look on top of the components above: SF system type
+ * with tight display tracking, borderless 18 px cards on a neutral page,
+ * capsule buttons in one blue, soft tinted status capsules (no uppercase),
+ * a translucent title bar and a macOS-style sidebar.
+ *
+ * Alignment: one 4 px grid. Card header and body share the same 20 px inset
+ * so titles, text, grids and tables start on one vertical line; inner tiles
+ * use 12 px radius and 12-16 px padding; every grid gap is 8 / 12 / 16 px.
+ * ================================================================== */
+
+body {
+  font-size: 14px;
+  line-height: 1.47;
+  letter-spacing: -0.01em;
+  font-feature-settings: "kern";
+  text-rendering: optimizeLegibility;
+}
+
+.prose {
+  color: var(--fg);
+  line-height: 1.53;
+}
+
+.hint {
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+/* ---- title bar: translucent, hairline, centred content height ---- */
+.appbar {
+  min-height: 52px;
+  padding: 0 24px 0 88px;
+  background: var(--appbar-top);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.brand-sub {
+  font-size: 12px;
+  color: var(--fg-mute);
+}
+
+/* ---- sidebar: macOS source list ---- */
+.shell {
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+.rail {
+  gap: 12px;
+  padding: 16px 12px;
+  background: color-mix(in srgb, var(--bg-1) 70%, var(--bg));
+  border-right: 1px solid var(--line);
+}
+
+.rail-list {
+  gap: 2px;
+}
+
+.step {
+  grid-template-columns: 24px minmax(0, 1fr) 12px;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+}
+
+.step-no {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  color: var(--fg-dim);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.step-zh {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.step-en {
+  font-size: 11px;
+}
+
+.step-mark {
+  font-size: 8px;
+}
+
+.step.is-current {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 0;
+}
+
+.step.is-current .step-no {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.step.is-current .step-zh {
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.step.is-current .step-mark {
+  color: var(--accent);
+}
+
+.step.is-done .step-no {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  color: var(--ok);
+}
+
+.rail-foot {
+  padding: 12px 10px 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ---- page: centred column, display headline ---- */
+.panels {
+  padding: 28px 32px 48px;
+}
+
+.panel-head {
+  max-width: 1120px;
+  margin: 0 auto 20px;
+}
+
+.panel-head h2 {
+  font-size: 28px;
+  line-height: 1.14;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.panel-en {
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--fg-mute);
+}
+
+.panel-sub {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--fg-dim);
+}
+
+.panel-body {
+  gap: 16px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+/* ---- cards: borderless tiles on the neutral page ---- */
+.card {
+  border: 0;
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.card-head {
+  min-height: 56px;
+  padding: 16px 20px 0;
+  border-bottom: 0;
+  align-items: center;
+}
+
+.card-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  gap: 10px;
+}
+
+.card-body {
+  gap: 14px;
+  padding: 12px 20px 20px;
+}
+
+/* Grouped rows inside a card (inset list style). */
+.kv-grid {
+  gap: 0 24px;
+}
+
+.kv {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.kv-k {
+  font-size: 13px;
+}
+
+.metric {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.metric-k {
+  font-size: 12.5px;
+}
+
+.axis-grid,
+.evidence-grid,
+.flight-cards,
+.motor-grid,
+.stages,
+.kpi-grid {
+  gap: 12px;
+}
+
+.axis-card,
+.evidence-row,
+.flight-card,
+.motor-cell,
+.stage,
+.kpi,
+.checklist li,
+.fault,
+.msc-vol,
+.proposal .prop-section {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+
+.axis-card {
+  padding: 16px;
+}
+
+.axis-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+.evidence-row {
+  padding: 10px 14px;
+  gap: 4px 12px;
+}
+
+.flight-card,
+.stage,
+.kpi,
+.motor-cell {
+  padding: 14px 16px;
+}
+
+.proposal .prop-section {
+  padding: 12px 16px;
+}
+
+/* Status is carried by a thin coloured ring, not a heavy border. */
+.evidence-row.is-short,
+.flight-card.is-needed,
+.motor-cell.is-outlier,
+.kpi-warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.kpi-crit {
+  border-color: color-mix(in srgb, var(--crit) 50%, transparent);
+}
+
+.flight-card.is-checked {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.stage.is-current {
+  border-color: var(--accent);
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-2));
+}
+
+.kpi-value {
+  font-family: var(--sans);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-label,
+.stage-title,
+.flight-card-title,
+.motor-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.prop-sec-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+
+.prop-sec-en {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ---- buttons: capsules, one blue ---- */
+.btn {
+  min-height: 34px;
+  padding: 7px 18px;
+  border-radius: 980px;
+  border: 1px solid transparent;
+  background: var(--bg-3);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--fg) 10%, var(--bg-3));
+}
+
+.btn:active:not(:disabled) {
+  transform: none;
+  opacity: 0.85;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 500;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-danger {
+  background: var(--crit-bg);
+  border-color: transparent;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--line-2);
+  color: var(--accent-fg);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.btn-sm {
+  min-height: 28px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+}
+
+.btn.is-locked {
+  border-style: dashed;
+  border-color: var(--line-2);
+}
+
+.row {
+  gap: 10px;
+  align-items: center;
+}
+
+/* ---- inputs ---- */
+.input {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--input-bg);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input:focus,
+.input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  margin-bottom: 6px;
+}
+
+/* ---- status capsules ---- */
+.badge,
+.chip,
+.pill {
+  border: 0;
+  border-radius: 980px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.badge {
+  padding: 2px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: var(--bg-3);
+}
+
+.chip {
+  padding: 3px 10px;
+  font-size: 12px;
+  background: var(--bg-2);
+}
+
+.badge-ok,
+.chip-ok,
+.pill-ok {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+}
+
+.badge-warn,
+.chip-warn,
+.pill-warn {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+}
+
+.badge-crit,
+.chip-crit,
+.pill-crit {
+  background: color-mix(in srgb, var(--crit) 15%, transparent);
+}
+
+.badge-info,
+.chip-info {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-fg);
+}
+
+/* ---- banners: tinted panel, no heavy left rule ---- */
+.banner {
+  gap: 6px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+.banner-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---- tables ---- */
+.tbl {
+  font-size: 13px;
+}
+
+.tbl th,
+.tbl td,
+.kpi-trend th,
+.kpi-trend td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tbl th,
+.kpi-trend th {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-mute);
+}
+
+.tbl tbody tr:hover td {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+/* ---- code ---- */
+code.mono,
+.code {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+}
+
+/* ---- canvases sit flush with the card inset ---- */
+.fft-canvas,
+.step-canvas {
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* ---- sticky session bar: frosted ---- */
+.statebar {
+  max-width: 1120px;
+  margin: 0 auto 20px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: var(--card-shadow);
+}
+
+.statebar-step {
+  font-size: 12px;
+}
+
+/* ---- status bar and log ---- */
+.statusbar {
+  min-height: 36px;
+  padding: 6px 24px;
+  background: var(--appbar-top);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  font-size: 12px;
+}
+
+.log-head {
+  padding: 6px 24px;
+}
+
+/* ---- modals ---- */
+.modal {
+  padding: 28px 28px 22px;
+  border: 0;
+  border-radius: 22px;
+}
+
+.modal-title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.modal-backdrop {
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* ---- journal ---- */
+.journal-timeline li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- motion: respect reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .input {
+    transition: none;
+  }
+  .panels {
+    scroll-behavior: auto;
+  }
+}
+
+/* ---- alignment fixes ---- */
+
+/* Tiles in a row share a height, but their rows must not spread out to fill it:
+   otherwise the same metric sits at a different height in each axis card. */
+.axis-card,
+.flight-card,
+.stage,
+.motor-cell {
+  align-content: start;
+}
+
+.axis-head {
+  min-height: 24px;
+}
+
+/* Evidence rows: fixed status and label columns so every value starts on one line. */
+.evidence-row {
+  grid-template-columns: 52px 13em minmax(0, 1fr);
+}
+
+.evidence-row .badge {
+  justify-self: start;
+}
+
+/* Programmatic focus on a panel heading (step change) is not a keyboard focus
+   ring the user asked for. */
+[tabindex='-1']:focus:not(:focus-visible),
+.panel-head:focus,
+.panel-head h2:focus {
+  outline: none;
+}
+
+/* Scorecard tiles: label always reserves two lines, so every value and grade
+   sits on the same baseline across a row whatever the label length. */
+.kpi {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+
+.kpi-label {
+  grid-column: 1 / -1;
+  min-height: 2.9em;
+  line-height: 1.45;
+}
+
+.kpi .badge {
+  justify-self: end;
+}
+
+/* Stage tiles: titles that wrap must not push the goal text out of line. */
+.stage-head {
+  align-items: flex-start;
+  min-height: 40px;
+}
+
+/* Long values (file paths) wrap inside their own column instead of running
+   under the neighbouring field. */
+.kv {
+  min-width: 0;
+}
+
+.kv-v {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* First table column (time / parameter) never breaks mid-value. */
+.tbl td:first-child {
+  white-space: nowrap;
+}
+
+/* Journal profile: an even 4-up grid instead of 6 + 1 orphan. */
+.journal-profile {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .journal-profile {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .evidence-row {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+  .evidence-row .evidence-have {
+    grid-column: 2 / -1;
+  }
 }
