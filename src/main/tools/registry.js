@@ -153,6 +153,15 @@ export function createHandlers(session, ctx = {}) {
 
     [CH.TUNE_APPLY]: async (args = {}) => session.applyTune(args),
 
+    [CH.TUNE_PLAN]: async () => session.getPlan(),
+
+    /* ---------------- tuning journal (local files only) ---------------- */
+
+    [CH.JOURNAL_LIST]: async () => session.listQuads(),
+    [CH.JOURNAL_GET]: async ({ id } = {}) => session.getQuad(id),
+    [CH.JOURNAL_SET_PROFILE]: async ({ id, patch = {} } = {}) => session.setQuadProfile(id, patch),
+    [CH.JOURNAL_ADD_NOTE]: async ({ id, text = '' } = {}) => session.addQuadNote(id, text),
+
     /* ---------------- AI agent (optional, read-only) ---------------- */
 
     /**

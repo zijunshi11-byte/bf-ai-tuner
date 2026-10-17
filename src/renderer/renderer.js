@@ -386,6 +386,10 @@ const state = {
   fft: { data: null, axis: 'roll' },
   /** History page. */
   history: { reports: [], loading: false, openId: null, report: null },
+  /** Campaign plan + scorecard from tune:plan after the latest propose. */
+  plan: null,
+  /** Per-quad tuning journal (History page). */
+  journal: { quads: [], loading: false, loaded: false, selected: null, doc: null, draft: {}, note: '' },
   historySort: { key: 'savedAt', dir: -1 },
   /** The currently open confirm-with-diff dialog, if any. */
   confirmDialog: null,
@@ -1733,7 +1737,10 @@ function showStep(index) {
     if (panel) panel.hidden = i !== index;
   }
   // The history page loads its list on entry (once per entry, coalesced).
-  if (index === 2) loadHistoryList();
+  if (index === 2) {
+    loadHistoryList();
+    loadJournalList();
+  }
   renderStep(index);
   const title = $(`#step-title-${index}`);
   if (title) title.focus({ preventScroll: true });
@@ -4228,6 +4235,212 @@ function mechanicalCard(metrics) {
   return card('机械健康 / Mechanical', parts, { badges: [badge(flagged ? '需检查' : '未见异常', flagged ? 'warn' : 'ok')] });
 }
 
+/* ---------------- campaign plan + racing scorecard ---------------- */
+
+const STAGE_LABEL = { logging: '记录设置', mechanical: '机械', filters: '滤波', pd: 'P/D 平衡', feel: '手感' };
+const STAGE_STATUS = {
+  ok: ['完成', 'ok'],
+  action: ['有建议', 'info'],
+  check: ['需检查', 'warn'],
+  'needs-data': ['需补飞', 'warn'],
+  blocked: ['阻断', 'crit'],
+};
+const GRADE_TONE = { ok: 'ok', warn: 'warn', crit: 'crit', na: 'idle' };
+const GRADE_TEXT = { ok: '好', warn: '一般', crit: '差', na: '无数据' };
+
+function campaignCard(plan) {
+  if (!plan || !Array.isArray(plan.stages)) return null;
+  const steps = plan.stages.map((s, i) => {
+    const [label, tone] = STAGE_STATUS[s.status] || [str(s.status), 'idle'];
+    return el('div', { class: ['stage', plan.current === s.id ? 'is-current' : '', `stage-${s.status}`] }, [
+      el('div', { class: 'stage-head' }, [
+        el('span', { class: 'stage-index mono-num', text: String(i + 1) }),
+        el('span', { class: 'stage-title', text: str(s.title) }),
+        badge(label, tone),
+      ]),
+      el('p', { class: 'hint', text: str(s.goal) }),
+      s.actions?.length ? el('p', { class: 'hint', text: `建议：${s.actions.join('、')}` }) : null,
+      s.withheld?.length ? el('p', { class: 'hint', text: `证据不足暂缓：${s.withheld.join('、')}` }) : null,
+      (s.issues || []).length ? el('p', { class: 'hint', text: `问题：${s.issues.map((x) => str(x.code)).join('、')}` }) : null,
+    ]);
+  });
+  return card(
+    '调参路线 / Campaign',
+    [
+      el('p', { class: 'prose', text: str(plan.summary) }),
+      el('div', { class: 'stages' }, steps),
+      el('p', { class: 'hint', text: '顺序：记录设置 → 机械 → 滤波 → P/D 平衡 → 手感（FF/I/TPA）。前一阶段没处理好时，后一阶段测到的数字不可信。本路线只做提示，写入仍走原来的安全流程，每次会话最多一轮。' }),
+    ],
+    { badges: [badge(plan.current ? `当前：${STAGE_LABEL[plan.current] || plan.current}` : '无需改动', plan.current ? 'info' : 'ok')] },
+  );
+}
+
+function kpiValueText(k) {
+  if (k?.value === null || k?.value === undefined) return '—';
+  return `${fmtNum(k.value, k.unit ? 1 : 3)}${k.unit ? ` ${k.unit}` : ''}`;
+}
+
+function scorecardCard(scorecard) {
+  const kpis = Array.isArray(scorecard?.kpis) ? scorecard.kpis : [];
+  if (!kpis.length) return null;
+  return card(
+    '竞速成绩单 / Racing scorecard',
+    [
+      el('p', { class: 'prose', text: '用来在多次飞行之间对比的几个关键数字。评级是五寸竞速的参考区间，不会直接触发任何参数修改。' }),
+      el('div', { class: 'kpi-grid' }, kpis.map((k) =>
+        el('div', { class: ['kpi', `kpi-${k.grade}`] }, [
+          el('span', { class: 'kpi-label', text: str(k.label) }),
+          el('span', { class: 'kpi-value mono-num', text: kpiValueText(k) }),
+          badge(GRADE_TEXT[k.grade] || str(k.grade), GRADE_TONE[k.grade] || 'idle'),
+          el('span', { class: 'hint', text: str(k.source) }),
+        ]),
+      )),
+    ],
+    {},
+  );
+}
+
+/* ---------------- per-quad journal (History page) ---------------- */
+
+async function loadJournalList() {
+  if (state.journal.loading) return;
+  state.journal.loading = true;
+  const res = await run('读取机体档案', () => window.bf.journal.list());
+  state.journal.loading = false;
+  state.journal.loaded = true;
+  if (res.ok) {
+    const value = res.value && typeof res.value === 'object' ? res.value : {};
+    state.journal.quads = Array.isArray(value.quads) ? value.quads : [];
+    if (!state.journal.selected && state.journal.quads.length) state.journal.selected = state.journal.quads[0].id;
+    if (state.journal.selected) await loadJournalQuad(state.journal.selected, { render: false });
+  }
+  renderStep(state.step);
+}
+
+async function loadJournalQuad(id, { render = true } = {}) {
+  const res = await run('读取机体时间线', () => window.bf.journal.get(id));
+  if (res.ok && res.value?.quad) {
+    state.journal.selected = id;
+    state.journal.doc = res.value.quad;
+    state.journal.draft = { ...(res.value.quad.profile || {}) };
+  }
+  if (render) renderStep(state.step);
+}
+
+async function saveJournalProfile() {
+  const id = state.journal.selected;
+  if (!id) return;
+  const res = await run('保存机体资料', () => window.bf.journal.setProfile(id, state.journal.draft));
+  if (res.ok) appendLog(infoEntry(`机体资料已保存：${id}`));
+  await loadJournalQuad(id);
+}
+
+async function addJournalNote() {
+  const id = state.journal.selected;
+  const text = String(state.journal.note || '').trim();
+  if (!id || !text) return;
+  const res = await run('添加笔记', () => window.bf.journal.addNote(id, text));
+  if (res.ok) state.journal.note = '';
+  await loadJournalQuad(id);
+}
+
+const PROFILE_INPUTS = [
+  ['name', '名称', 'text'],
+  ['frame', '机架', 'text'],
+  ['props', '桨', 'text'],
+  ['motors', '电机', 'text'],
+  ['motorKv', 'KV', 'number'],
+  ['cells', '电池 S 数', 'number'],
+  ['weightG', '起飞重量 g', 'number'],
+];
+
+function journalEntryText(e) {
+  if (e.kind === 'analysis') {
+    const k = Object.fromEntries((e.scorecard?.kpis || []).map((x) => [x.key, x]));
+    return `分析 · 阶段 ${STAGE_LABEL[e.stage] || '无需改动'} · 延迟 ${kpiValueText(k.delayMs)} · 超调 ${kpiValueText(k.overshootPct)} · 洗桨 ${kpiValueText(k.propwash)}` +
+      (e.missing?.length ? ` · 证据不足 ${e.missing.length} 项` : '');
+  }
+  if (e.kind === 'apply') return `写入 · ${(e.diff || []).map((d) => `${d.param} ${d.from}→${d.to}`).join('，')}`;
+  if (e.kind === 'evaluate') {
+    const moved = (e.scorecardDelta || []).filter((d) => d.direction === 'better' || d.direction === 'worse');
+    return `复飞评估 · ${str(e.verdict)}${e.rolledBack ? ' · 已自动回退' : ''}` +
+      (moved.length ? ` · ${moved.map((d) => `${d.label}${d.direction === 'better' ? '↑' : '↓'}`).join('，')}` : '');
+  }
+  if (e.kind === 'note') return `笔记 · ${str(e.text)}`;
+  return str(e.kind);
+}
+
+function journalCard() {
+  const j = state.journal;
+  if (!j.loaded && !j.loading) loadJournalList();
+  if (!j.quads.length) {
+    return card('机体档案 / Journal', [el('p', { class: 'hint', text: '还没有记录。每次在分析步骤生成建议都会按机体（craft name / 飞控板）自动建档并记一条。' })]);
+  }
+  const select = el('select', { class: 'input', id: 'journal-quad' }, j.quads.map((q) =>
+    el('option', { value: q.id, text: `${hasText(q.profile?.name) ? str(q.profile.name) : q.id}（${fmtInt(q.entries)} 条）`, selected: q.id === j.selected }),
+  ));
+  select.addEventListener('change', () => loadJournalQuad(select.value));
+
+  const doc = j.doc;
+  const inputs = PROFILE_INPUTS.map(([key, label, type]) => {
+    const input = el('input', { class: 'input', type, value: j.draft[key] ?? '', placeholder: label, attrs: { autocomplete: 'off', 'aria-label': label } });
+    input.addEventListener('input', () => {
+      j.draft[key] = type === 'number' ? (input.value === '' ? null : Number(input.value)) : input.value;
+    });
+    return el('label', { class: 'journal-field' }, [el('span', { class: 'field-label', text: label }), input]);
+  });
+  const saveBtn = button('保存资料 / Save', { variant: 'ghost', size: 'sm' });
+  action(saveBtn, '保存机体资料', saveJournalProfile);
+
+  const entries = Array.isArray(doc?.entries) ? doc.entries : [];
+  const analyses = entries.filter((e) => e.kind === 'analysis').slice(-8);
+  const trendKeys = ['delayMs', 'overshootPct', 'propwash', 'dTermRatio', 'noiseAttenuationDb', 'filterDelayMs'];
+  const trend = analyses.length
+    ? el('table', { class: 'kpi-trend' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: '时间' }),
+          ...trendKeys.map((key) => el('th', { text: (analyses[0].scorecard?.kpis || []).find((k) => k.key === key)?.label || key })),
+        ])]),
+        el('tbody', {}, analyses.map((e) => {
+          const k = Object.fromEntries((e.scorecard?.kpis || []).map((x) => [x.key, x]));
+          return el('tr', {}, [
+            el('td', { text: fmtDateTime(e.at) }),
+            ...trendKeys.map((key) => el('td', { class: ['mono-num', k[key] ? `tone-${GRADE_TONE[k[key].grade]}` : ''], text: kpiValueText(k[key]) })),
+          ]);
+        })),
+      ])
+    : el('p', { class: 'hint', text: '还没有分析记录。' });
+
+  const noteInput = el('input', { class: 'input', type: 'text', value: j.note, placeholder: '笔记：换桨、换电机、摔机…', attrs: { autocomplete: 'off' } });
+  noteInput.addEventListener('input', () => {
+    j.note = noteInput.value;
+  });
+  const noteBtn = button('添加笔记 / Add', { variant: 'ghost', size: 'sm' });
+  action(noteBtn, '添加笔记', addJournalNote);
+
+  const timeline = el('ol', { class: 'journal-timeline' }, entries.slice(-30).reverse().map((e) =>
+    el('li', { class: `journal-${str(e.kind)}` }, [
+      el('span', { class: 'hint mono-num', text: fmtDateTime(e.at) }),
+      el('span', { text: journalEntryText(e) }),
+    ]),
+  ));
+
+  return card(
+    '机体档案 / Journal',
+    [
+      el('div', { class: 'row' }, [select, el('span', { class: 'hint', text: [doc?.board, doc?.firmware].filter(Boolean).join(' · ') })]),
+      el('div', { class: 'journal-profile' }, inputs),
+      el('div', { class: 'row' }, [saveBtn]),
+      el('span', { class: 'field-label', text: '成绩单趋势（最近 8 次分析）/ KPI trend' }),
+      trend,
+      el('span', { class: 'field-label', text: '时间线 / timeline' }),
+      el('div', { class: 'row' }, [noteInput, noteBtn]),
+      timeline,
+    ],
+    { badges: [badge(`${fmtInt(j.quads.length)} 台`, 'info')] },
+  );
+}
+
 /* ---------------- deconvolved step response plot ---------------- */
 
 const STEP_W = 480;
@@ -4407,6 +4620,10 @@ async function proposeTunes() {
   state.proposals = Array.isArray(res.value) ? res.value : [];
   state.apply = {};
   appendLog(infoEntry(`生成 ${state.proposals.length} 条建议`, 'state'));
+  const planRes = await run('读取调参路线', () => window.bf.tune.plan());
+  state.plan = planRes.ok && planRes.value && typeof planRes.value === 'object' ? planRes.value : null;
+  if (state.plan?.plan?.summary) appendLog(infoEntry(state.plan.plan.summary, 'state'));
+  state.journal.loaded = false; // the propose just wrote a journal entry
   renderStep(state.step);
 }
 
@@ -4829,6 +5046,7 @@ function proposalCard(p, index, opts = {}) {
   const notAppliedText = hasText(p?.ifNotApplied) ? str(p.ifNotApplied) : null;
 
   const sections = [
+    hasText(p?.stageNote) ? el('p', { class: 'hint stage-note', text: str(p.stageNote) }) : null,
     propSection('哪里不对', 'Problem', para(p?.problem)),
     propSection('证据', 'Evidence', para(p?.evidence, 'prose mono')),
     cliConclusionSection(cliLines, diffRows),
@@ -4891,6 +5109,7 @@ function proposalCard(p, index, opts = {}) {
     [
       el('div', { class: 'row' }, [
         badge(CATEGORY_LABEL[p?.category] || str(p?.category), CATEGORY_TONE[p?.category] || 'idle'),
+        p?.stage ? badge(`阶段：${STAGE_LABEL[p.stage] || str(p.stage)}`, 'idle') : null,
         safe ? badge('safeToApply', 'ok') : badge('safeToApply = false', 'crit'),
         informational ? badge('仅结论 / 不写入', 'info') : null,
         applied ? badge('已写入 / applied', 'info') : null,
@@ -5193,6 +5412,8 @@ function renderAnalysis(body) {
     if (evidence) parts.push(evidence);
     const mechanical = mechanicalCard(metrics);
     if (mechanical) parts.push(mechanical);
+    const scorecard = scorecardCard(state.plan?.scorecard || metrics.scorecard);
+    if (scorecard) parts.push(scorecard);
     if (blockers) {
       parts.push(
         banner('crit', '硬性阻断 / HARD STOP', [
@@ -5201,6 +5422,8 @@ function renderAnalysis(body) {
       );
     }
     parts.push(evaluationCard());
+    const campaign = campaignCard(state.plan?.plan);
+    if (campaign) parts.push(campaign);
     parts.push(proposalsCard());
   } else {
     parts.push(card('建议 / Proposals', [el('p', { class: 'hint', text: '尚未运行分析。' })]));
@@ -5622,6 +5845,8 @@ function renderHistory(body) {
       { actions: [refreshBtn], badges: [badge(`${state.history.reports.length} 份 / reports`, 'info')] },
     ),
   );
+
+  body.append(journalCard());
 
   if (state.history.report) {
     body.append(historyDetailCard(state.history.report));
@@ -6152,6 +6377,9 @@ if (window.__BF_UI_TEST__) {
     drawStepPlot,
     evidenceCard,
     mechanicalCard,
+    campaignCard,
+    scorecardCard,
+    journalCard,
     stepResponseCard,
     flightGuidanceCard,
     drawSparkline,

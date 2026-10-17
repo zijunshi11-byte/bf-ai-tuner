@@ -52,6 +52,11 @@ const CH = {
   TUNE_EVALUATE: 'tune:evaluate',
   TUNE_PROPOSE: 'tune:propose',
   TUNE_APPLY: 'tune:apply',
+  TUNE_PLAN: 'tune:plan',
+  JOURNAL_LIST: 'journal:list',
+  JOURNAL_GET: 'journal:get',
+  JOURNAL_SET_PROFILE: 'journal:set_profile',
+  JOURNAL_ADD_NOTE: 'journal:add_note',
   AI_GET_CONFIG: 'ai:get_config',
   AI_SET_CONFIG: 'ai:set_config',
   AI_ANALYZE: 'ai:analyze',
@@ -152,6 +157,16 @@ const api = {
     apply: (args = {}) => invoke(CH.TUNE_APPLY, args),
     /** Re-analyse a post-change flight and judge better / worse. */
     evaluate: (args = {}) => invoke(CH.TUNE_EVALUATE, args),
+    /** Stage plan + racing scorecard of the latest propose. */
+    plan: () => invoke(CH.TUNE_PLAN),
+  },
+
+  /** Per-quad tuning journal (local only). */
+  journal: {
+    list: () => invoke(CH.JOURNAL_LIST),
+    get: (id) => invoke(CH.JOURNAL_GET, { id }),
+    setProfile: (id, patch = {}) => invoke(CH.JOURNAL_SET_PROFILE, { id, patch }),
+    addNote: (id, text) => invoke(CH.JOURNAL_ADD_NOTE, { id, text }),
   },
 
   /**

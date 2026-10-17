@@ -18,7 +18,10 @@ import { FcIdentifier } from './fc/fc-identify.js';
 import { FcSettingsReader } from './fc/fc-settings.js';
 import { BlackboxManager } from './blackbox/blackbox-manager.js';
 import { SafetyGuard } from './safety/guard.js';
-import { proposeTune, filterDiff } from './analysis/ai-tune.js';
+import { proposeTune, collectProposals, filterDiff } from './analysis/ai-tune.js';
+import { annotateStages, planCampaign } from './analysis/campaign.js';
+import { buildScorecard, compareScorecards } from './analysis/scorecard.js';
+import { JournalStore, quadIdFor } from './journal/journal-store.js';
 import { BackupStore, BACKUP_PARAMS, parseSettings, extractSetCommands, rollbackSafety } from './backup/backup-store.js';
 import { enterMsc, exitMsc, findFcVolumes, importLogs } from './blackbox/msc.js';
 import { compareRuns } from './analysis/compare-runs.js';
@@ -44,6 +47,7 @@ export class Session extends EventEmitter {
       backupStoreDir: `${userDataDir}/backups/store`,
       captureDir: `${userDataDir}/captures`,
       reportsDir: `${userDataDir}/reports`,
+      journalDir: `${userDataDir}/journal`,
     };
 
     this.transport = null;
@@ -54,6 +58,10 @@ export class Session extends EventEmitter {
     this.blackbox = null;
 
     this.backupStore = new BackupStore(this.paths.backupStoreDir);
+    /** Per-quad timeline of analyses, writes and re-fly verdicts (local only). */
+    this.journal = new JournalStore(this.paths.journalDir);
+    /** Campaign plan + scorecard of the latest proposeTune, served by tune:plan. */
+    this.lastPlan = null;
     this.guard = new SafetyGuard({ onLog: (level, message) => this.#log(level, message) });
     this.settings = null;
     this.identity = null;
@@ -388,11 +396,28 @@ export class Session extends EventEmitter {
       this.#recordLastChange({ ...change, rolledBackAt: new Date().toISOString() });
     }
 
+    const scorecardDelta = compareScorecards(
+      baseline.metrics.scorecard || buildScorecard(baseline.metrics),
+      after.scorecard || buildScorecard(after),
+    );
+    const quadId = change.quadId || this.#quadMeta(after).id;
+    this.#journal({ id: quadId }, {
+      kind: 'evaluate',
+      verdict: verdict.verdict,
+      summary: verdict.summary,
+      rolledBack,
+      appliedDiff: change.diff ?? [],
+      baselineReportId: baseline.id ?? change.baselineReportId ?? null,
+      scorecard: after.scorecard || buildScorecard(after),
+      scorecardDelta,
+    });
+
     return {
       ok: true,
       verdict: verdict.verdict,
       reasons: verdict.reasons,
       summary: verdict.summary,
+      scorecardDelta,
       shouldRollback: verdict.shouldRollback,
       rolledBack,
       rollback,
@@ -607,13 +632,20 @@ export class Session extends EventEmitter {
       tpaMode: typeof raw.tpa_mode === 'string' ? raw.tpa_mode : null,
     };
 
-    const proposals = proposeTune({
+    const ruleInput = {
       metrics: report,
       currentPid: pid,
       currentFilter: filter,
       capabilities: this.capabilities,
       dynamics,
+    };
+    // The campaign plan reads every finding, not just the three shown.
+    const collected = collectProposals(ruleInput);
+    const plan = planCampaign({
+      metrics: report,
+      proposals: collected.blocking || [...collected.kept, ...(collected.gap ? [collected.gap] : [])],
     });
+    const proposals = annotateStages(proposeTune(ruleInput), plan);
 
     // Annotate each proposal with the live safety gate so the UI can disable
     // the apply button with a real reason rather than guessing.
@@ -634,6 +666,21 @@ export class Session extends EventEmitter {
       this.lastReportId = reportId;
       this.#log('info', `分析报告已存档：${reportId}`);
     }
+
+    const scorecard = report.scorecard || buildScorecard(report);
+    const quad = this.#quadMeta(report);
+    this.lastPlan = { plan, scorecard, quadId: quad.id, reportId };
+    this.#journal(quad, {
+      kind: 'analysis',
+      reportId,
+      file: report.file || null,
+      scorecard,
+      stage: plan.current,
+      summary: plan.summary,
+      missing: report.evidence?.missing || [],
+      faults: (report.faults || []).filter((f) => f.severity !== 'info').map((f) => f.code),
+      proposals: annotated.map((p) => ({ id: p.id, stage: p.stage ?? null, diff: p.diff || [] })),
+    });
 
     return annotated;
   }
@@ -873,7 +920,18 @@ export class Session extends EventEmitter {
       diff: pending?.diff || proposedDiff,
       backupId: this.lastBackupId,
       baselineReportId: this.lastReportId,
+      quadId: this.lastPlan?.quadId ?? null,
     });
+    if (this.lastPlan?.quadId) {
+      this.#journal({ id: this.lastPlan.quadId }, {
+        kind: 'apply',
+        proposalId: target?.id || proposalId || null,
+        stage: target?.stage ?? null,
+        diff: pending?.diff || proposedDiff,
+        backupId: this.lastBackupId,
+        baselineReportId: this.lastReportId,
+      });
+    }
 
     // Reflect the write in the cached settings so later diffs are correct.
     if (this.settings?.raw) {
@@ -1025,6 +1083,51 @@ export class Session extends EventEmitter {
       lines: result.lines,
       reason: result.ok ? undefined : result.reason,
     };
+  }
+
+  /* ---------------- tuning journal (per quad) ---------------- */
+
+  /**
+   * Which craft a report belongs to: the connected FC's craft name / board
+   * when there is one, else what the log header recorded.
+   */
+  #quadMeta(report) {
+    const craftName = this.identity?.craftName || report?.craft?.name || null;
+    const board = this.identity?.boardName || this.identity?.boardIdentifier || report?.craft?.board || null;
+    const firmware = this.identity?.version || report?.craft?.firmware || null;
+    return { id: quadIdFor({ craftName, board }), craftName, board, firmware };
+  }
+
+  /** Append to the journal; a failure is logged, never thrown into the tune path. */
+  #journal(quad, entry) {
+    try {
+      this.journal.append(quad.id, entry, quad);
+    } catch (err) {
+      this.#log('warn', `调参档案写入失败：${err.message}`);
+    }
+  }
+
+  /** Campaign plan + scorecard from the latest proposeTune. */
+  getPlan() {
+    return this.lastPlan || { plan: null, scorecard: null, quadId: null, reportId: null };
+  }
+
+  listQuads() {
+    return { quads: this.journal.list() };
+  }
+
+  getQuad(id) {
+    const quad = this.journal.get(id);
+    if (!quad) throw new Error('no journal for this quad yet');
+    return { quad };
+  }
+
+  setQuadProfile(id, patch) {
+    return { profile: this.journal.setProfile(id, patch) };
+  }
+
+  addQuadNote(id, text) {
+    return { entry: this.journal.addNote(id, text) };
   }
 
   /* ---------------- report history ---------------- */

@@ -125,15 +125,48 @@ export const THRESHOLDS = {
  * @param {object} [args.capabilities]
  * @returns {import('../../shared/contracts.js').TuneProposal[]}
  */
-export function proposeTune(
+export function proposeTune(args = {}) {
+  const { metrics } = args;
+  if (!metrics) return [];
+  const { blocking, kept, gap } = collectProposals(args);
+  if (blocking) return blocking;
+
+  // Highest confidence first, and never more than three actions at once - the
+  // operator must be able to attribute the result of a change to that change.
+  const ranked = kept
+    .sort((a, b) => Number(b.safeToApply) - Number(a.safeToApply) || b.confidence - a.confidence);
+  const top = ranked.slice(0, 3);
+
+  // Reserve a slot for filter advice: ranking by confidence alone lets three
+  // PID findings hide the filter work entirely, which is exactly the complaint
+  // this is here to fix.
+  if (!top.some((x) => x.category === 'filter')) {
+    const bestFilter = ranked.find((x) => x.category === 'filter' && x.safeToApply) || ranked.find((x) => x.category === 'filter');
+    if (bestFilter && top.length >= 3) top[top.length - 1] = bestFilter;
+    else if (bestFilter) top.push(bestFilter);
+  }
+
+  // The gap notice never takes an action slot: it changes nothing.
+  if (gap) top.push(gap);
+  return top;
+}
+
+/**
+ * Every finding the rules produce for this log, before proposeTune keeps the
+ * top three. The campaign planner needs the whole picture: a PID finding cut
+ * from the top three is still evidence of where the quad is on the path.
+ *
+ * @returns {{blocking: object[]|null, kept: object[], gap: object|null}}
+ */
+export function collectProposals(
   { metrics, currentPid = null, currentFilter = null, capabilities = null, dynamics = null } = {},
 ) {
-  if (!metrics) return [];
+  if (!metrics) return { blocking: null, kept: [], gap: null };
 
   const blocking = (metrics.faults || []).filter((f) => f.blocksTuning);
   if (blocking.length) {
     // Hard stop: report the faults, propose nothing that changes flight behaviour.
-    return blocking.map((fault, i) => hardwareProposal(fault, i, metrics));
+    return { blocking: blocking.map((fault, i) => hardwareProposal(fault, i, metrics)), kept: [], gap: null };
   }
 
   const proposals = [];
@@ -192,25 +225,7 @@ export function proposeTune(
   // not gated (unit fixtures exercise rule logic in isolation).
   const { kept, withheld } = gateProposals(proposals.filter(Boolean), metrics.evidence);
   const gap = withheld.length ? evidenceGapProposal(metrics.evidence, withheld) : null;
-
-  // Highest confidence first, and never more than three actions at once - the
-  // operator must be able to attribute the result of a change to that change.
-  const ranked = kept
-    .sort((a, b) => Number(b.safeToApply) - Number(a.safeToApply) || b.confidence - a.confidence);
-  const top = ranked.slice(0, 3);
-
-  // Reserve a slot for filter advice: ranking by confidence alone lets three
-  // PID findings hide the filter work entirely, which is exactly the complaint
-  // this is here to fix.
-  if (!top.some((x) => x.category === 'filter')) {
-    const bestFilter = ranked.find((x) => x.category === 'filter' && x.safeToApply) || ranked.find((x) => x.category === 'filter');
-    if (bestFilter && top.length >= 3) top[top.length - 1] = bestFilter;
-    else if (bestFilter) top.push(bestFilter);
-  }
-
-  // The gap notice never takes an action slot: it changes nothing.
-  if (gap) top.push(gap);
-  return top;
+  return { blocking: null, kept, gap };
 }
 
 /**

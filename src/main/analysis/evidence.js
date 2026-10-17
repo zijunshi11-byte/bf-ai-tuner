@@ -100,6 +100,9 @@ const DOMAIN_LABEL = Object.freeze({
 });
 
 function num(value) {
+  // Number(null) === 0: a missing measurement must stay missing so the
+  // fallbacks below (?? another source) still get their turn.
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }

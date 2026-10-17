@@ -1936,3 +1936,126 @@ textarea.input:disabled {
   font-weight: 600;
   font-size: 12.5px;
 }
+
+/* ---------------- campaign, scorecard, journal ---------------- */
+
+.stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.stage {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.stage.is-current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.stage-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stage-index {
+  color: var(--fg-mute);
+  font-size: 12px;
+}
+
+.stage-title {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+}
+
+.stage-note {
+  color: var(--warn);
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.kpi {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.kpi .hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+
+.kpi-label {
+  font-size: 12.5px;
+}
+
+.kpi-value {
+  font-size: 15px;
+  grid-column: 1;
+}
+
+.kpi-warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.kpi-crit {
+  border-color: color-mix(in srgb, var(--crit) 55%, var(--line));
+}
+
+.journal-profile {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.journal-field {
+  display: grid;
+  gap: 2px;
+}
+
+.kpi-trend {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.kpi-trend th,
+.kpi-trend td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.kpi-trend th {
+  color: var(--fg-mute);
+  font-weight: 500;
+}
+
+.journal-timeline {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+.journal-timeline li {
+  display: grid;
+  grid-template-columns: 11em 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--line);
+}

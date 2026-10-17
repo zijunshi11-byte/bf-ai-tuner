@@ -64,6 +64,14 @@ export const CH = {
   // --- tuning ---
   TUNE_PROPOSE: 'tune:propose',
   TUNE_APPLY: 'tune:apply',
+  /** Campaign stage plan + racing scorecard of the latest tune:propose. */
+  TUNE_PLAN: 'tune:plan',
+
+  // --- per-quad tuning journal (local userData only, never the FC) ---
+  JOURNAL_LIST: 'journal:list',
+  JOURNAL_GET: 'journal:get',
+  JOURNAL_SET_PROFILE: 'journal:set_profile',
+  JOURNAL_ADD_NOTE: 'journal:add_note',
 
   // --- AI agent analysis (optional; needs a user-supplied OpenAI-compatible endpoint) ---
   AI_GET_CONFIG: 'ai:get_config',

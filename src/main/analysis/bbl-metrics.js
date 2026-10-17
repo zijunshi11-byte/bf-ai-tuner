@@ -37,6 +37,7 @@ import { assessEvidence, throttleProfile } from './evidence.js';
 import { deconvolveStepResponse } from './step-deconv.js';
 import { classifyResonances, perMotorOnceVibration, rotationHz } from './mechanical.js';
 import { normaliseThrottle } from './evidence.js';
+import { buildScorecard } from './scorecard.js';
 
 /** Betaflight logs `eRPM[n]` as electrical RPM / 100 (upstream viewer: rpm = value * 200 / motor_poles). */
 const BLACKBOX_ERPM_SCALE = 100;
@@ -1244,6 +1245,14 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
   };
   // What each analysis domain has to work with (replaces a duration gate).
   report.evidence = assessEvidence(report);
+  // Which craft produced the log (journal key when no FC is connected).
+  report.craft = {
+    name: log.craftName || header['Craft name'] || null,
+    board: header['Board information'] || null,
+    firmware: log.firmware || null,
+  };
+  // The racing KPIs successive flights are compared on.
+  report.scorecard = buildScorecard(report);
   return report;
 }
 

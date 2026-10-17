@@ -242,3 +242,17 @@ test('the evidence notice never takes one of the three action slots', () => {
   const actions = proposals.filter((p) => p.id !== 'evidence-gap');
   assert.ok(actions.length <= 3);
 });
+
+test('a null transfer coherence falls back to the tracking estimate instead of reading as 0', () => {
+  const metrics = {
+    sampleRateHz: 2000,
+    axes: Object.fromEntries(['roll', 'pitch', 'yaw'].map((a) => [a, {
+      step: { samples: 9 },
+      transfer: { metrics: { meanCoherence: null } },
+      trackingCoherence: 0.8,
+    }])),
+  };
+  const ev = assessEvidence(metrics);
+  assert.equal(ev.domains.tracking.axes.roll.have, 0.8);
+  assert.equal(ev.domains.tracking.ok, true);
+});
