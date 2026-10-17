@@ -164,6 +164,17 @@ Open:
   one step on btfl_001; iterm_relax is not a noise filter so the 10 % filter
   budget does not apply, but the step is large — review.
 
+### 6.1b Simple flow (UI)
+
+The analysis page opens in a **simple view**: a guide card states the one next
+action (get a log → analyse → apply one proposal → re-fly and evaluate),
+followed by the scorecard and the current-stage proposals; every expert card
+is in folded sections. "显示全部数据" switches to the expert view
+(remembered in localStorage). Picking a log now analyses it and drafts the
+proposals automatically (both read-only); writes still need the two-phase
+apply. Re-fly evaluation now sends the new flight's metrics/file — before,
+it sent only `baselineId` and the main process always refused.
+
 ### 6.2 Not implemented
 
 1. **MSC is a manual choice.** There is no automatic size-based routing between

@@ -2734,3 +2734,172 @@ code.mono,
     grid-column: 2 / -1;
   }
 }
+
+/* ================================================================== *
+ * Simple flow: guide card, flow stepper, folded expert sections
+ * ================================================================== */
+
+.guide {
+  background: var(--bg-1);
+}
+
+.guide-body {
+  display: grid;
+  gap: 14px;
+  padding: 24px 28px 22px;
+}
+
+.guide-ok {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 35%, transparent), var(--card-shadow);
+}
+
+.guide-warn {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent), var(--card-shadow);
+}
+
+.guide-crit {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--crit) 45%, transparent), var(--card-shadow);
+}
+
+.guide-title {
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.guide-crit .guide-title {
+  color: var(--crit);
+}
+
+.guide-text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+  max-width: 64em;
+}
+
+.guide-actions {
+  margin-top: 4px;
+}
+
+.guide-spacer {
+  flex: 1;
+}
+
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-mute);
+}
+
+.flow-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.flow-step.is-done {
+  color: var(--fg-dim);
+}
+
+.flow-step.is-done .flow-dot {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  color: var(--ok);
+}
+
+.flow-step.is-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.flow-step.is-current .flow-dot {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.section-title {
+  margin: 8px 4px -4px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.fold {
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  box-shadow: var(--card-shadow);
+}
+
+.fold-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 20px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold-summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold-summary::before {
+  content: '›';
+  display: inline-block;
+  width: 12px;
+  color: var(--fg-mute);
+  font-size: 18px;
+  transition: transform 0.2s ease;
+}
+
+.fold[open] > .fold-summary::before {
+  transform: rotate(90deg);
+}
+
+.fold-body {
+  display: grid;
+  gap: 16px;
+  padding: 0 12px 12px;
+}
+
+.fold-body > .card {
+  background: var(--bg-2);
+  box-shadow: none;
+}
+
+.fold-body > .card .axis-card,
+.fold-body > .card .evidence-row,
+.fold-body > .card .flight-card,
+.fold-body > .card .motor-cell,
+.fold-body > .card .stage,
+.fold-body > .card .kpi,
+.fold-body > .card .prop-section {
+  background: var(--bg-1);
+}
+
+.card.is-focus {
+  box-shadow: 0 0 0 2px var(--accent), var(--card-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fold-summary::before {
+    transition: none;
+  }
+}

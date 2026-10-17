@@ -388,6 +388,10 @@ const state = {
   history: { reports: [], loading: false, openId: null, report: null },
   /** Campaign plan + scorecard from tune:plan after the latest propose. */
   plan: null,
+  /** 'simple' shows the guide + what to do now; 'expert' shows every card. */
+  view: readViewMode(),
+  /** Proposal id the guide card asked to reveal (scroll + highlight). */
+  focusProposal: null,
   /** Per-quad tuning journal (History page). */
   journal: { quads: [], loading: false, loaded: false, selected: null, doc: null, draft: {}, note: '' },
   historySort: { key: 'savedAt', dir: -1 },
@@ -4443,6 +4447,180 @@ function journalCard() {
   );
 }
 
+/* ---------------- simple flow: guide card + view mode ---------------- */
+
+const VIEW_KEY = 'bf-ai-tuner.view';
+
+function readViewMode() {
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === 'expert' ? 'expert' : 'simple';
+  } catch {
+    return 'simple';
+  }
+}
+
+function setViewMode(mode) {
+  state.view = mode === 'expert' ? 'expert' : 'simple';
+  try {
+    window.localStorage.setItem(VIEW_KEY, state.view);
+  } catch {
+    /* a remembered view is a convenience only */
+  }
+  renderStep(state.step);
+}
+
+const FLOW_STEPS = [
+  ['log', '拿到日志'],
+  ['analyse', '分析'],
+  ['apply', '应用一条建议'],
+  ['refly', '复飞并评估'],
+];
+
+/** The single thing to do next, worked out from what the app already knows. */
+function nextAction() {
+  const m = state.metrics;
+  const plan = state.plan?.plan || null;
+  const blockers = (m?.faults || []).filter((f) => f?.blocksTuning);
+  const proposals = Array.isArray(state.proposals) ? state.proposals : [];
+  const actionable = proposals.filter((p) => Array.isArray(p?.diff) && p.diff.length && p.safeToApply && !p.stageNote && !state.applied.has(p.id));
+  const gap = proposals.find((p) => p?.id === 'evidence-gap');
+
+  if (state.analysis.busy || state.download.busy) {
+    return { stage: 'analyse', tone: 'info', title: '正在处理…', text: '读取并分析日志，稍等几秒。' };
+  }
+  if (state.applied.size && !state.evaluate.result) {
+    return {
+      stage: 'refly',
+      tone: 'info',
+      title: '去复飞一次，然后评估效果',
+      text: '飞同样的动作（建议卡片里写了飞什么）。落地后选择新日志，自动分析完成后点「评估复飞」；如果明显变差，会自动回退到改动前。',
+      actions: ['pick', 'evaluate'],
+    };
+  }
+  if (!state.file || !m) {
+    return {
+      stage: 'log',
+      tone: 'info',
+      title: state.connected ? '下载刚飞完的日志' : '选择一份黑匣子日志',
+      text: state.connected
+        ? '一键下载并分析；也可以直接选择电脑上已有的 .bbl 文件。'
+        : '选择 .bbl 文件后会自动分析并给出建议，不需要连接飞控。要直接写入参数时再去「连接」。',
+      actions: state.connected ? ['downloadAnalyse', 'pick'] : ['pick'],
+    };
+  }
+  if (blockers.length) {
+    return {
+      stage: 'analyse',
+      tone: 'crit',
+      title: '先修硬件，这一轮不改参数',
+      text: `检测到：${blockers.map((f) => f.code).join('、')}。这类问题改 PID/滤波解决不了，修好后重新飞一次再分析。`,
+      actions: ['pick'],
+    };
+  }
+  if (actionable.length) {
+    const p = actionable[0];
+    return {
+      stage: 'apply',
+      tone: 'info',
+      title: `建议改一处：${str(p.problem).split(' - ')[0]}`,
+      text:
+        p.diff.map((d) => `${d.param}：${d.from} → ${d.to}`).join('；') +
+        (state.connected ? '。点下面的按钮查看理由并应用（先试运行，再确认写入）。' : '。连接飞控后可直接应用，或在建议里复制 CLI。'),
+      proposal: p,
+      actions: ['review'],
+    };
+  }
+  if (gap) {
+    const cards = (state.flight.cards || []).filter((c) => (gap.flightCards || []).includes(c.id));
+    return {
+      stage: 'log',
+      tone: 'warn',
+      title: '这份日志数据不够，补飞一次',
+      text: `${cards.map((c) => c.title).join('、') || '按「试飞科目」补飞'}。飞完选新日志，会自动重新分析。`,
+      cards,
+      actions: ['pick'],
+    };
+  }
+  if (plan?.current === 'mechanical') {
+    return { stage: 'analyse', tone: 'warn', title: '先检查机械', text: str(plan.summary), actions: ['pick'] };
+  }
+  return {
+    stage: 'refly',
+    tone: 'ok',
+    title: '当前参数不错，不需要改',
+    text: plan?.summary || '本日志没有发现需要调整的地方。继续飞，下次换桨、换电机或手感变了再来分析。',
+    actions: ['pick'],
+  };
+}
+
+function revealProposal(id) {
+  state.focusProposal = id;
+  renderStep(state.step);
+  const node = document.getElementById(`prop-${id}`);
+  if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function guideCard() {
+  const next = nextAction();
+  const stageIndex = FLOW_STEPS.findIndex(([k]) => k === next.stage);
+  const stepper = el('ol', { class: 'flow' }, FLOW_STEPS.map(([key, label], i) =>
+    el('li', { class: ['flow-step', i < stageIndex ? 'is-done' : '', i === stageIndex ? 'is-current' : ''] }, [
+      el('span', { class: 'flow-dot', text: i < stageIndex ? '✓' : String(i + 1) }),
+      el('span', { text: label }),
+    ]),
+  ));
+
+  const buttons = [];
+  for (const a of next.actions || []) {
+    if (a === 'pick') {
+      const b = button(state.file ? '选择新日志' : '选择日志文件', { variant: buttons.length ? 'ghost' : 'primary' });
+      action(b, '选择日志文件', pickLogFile);
+      buttons.push(b);
+    } else if (a === 'downloadAnalyse') {
+      const b = button('下载并分析', { variant: 'primary', enabled: () => state.connected && !state.download.busy });
+      action(b, '下载并分析', async () => {
+        if (!state.download.path) await startDownload();
+        if (state.download.path) await runMetrics();
+      });
+      buttons.push(b);
+    } else if (a === 'evaluate') {
+      const b = button('评估复飞', { variant: 'primary', enabled: () => Boolean(state.metrics) && !state.evaluate.busy });
+      action(b, '复飞评估', evaluateReflight);
+      buttons.push(b);
+    } else if (a === 'review' && next.proposal) {
+      const b = button('查看并应用', { variant: 'primary' });
+      action(b, '查看建议', () => revealProposal(next.proposal.id));
+      buttons.push(b);
+    }
+  }
+
+  const viewBtn = button(state.view === 'simple' ? '显示全部数据' : '只看要做的事', { variant: 'ghost', size: 'sm' });
+  action(viewBtn, '切换视图', () => setViewMode(state.view === 'simple' ? 'expert' : 'simple'));
+
+  return el('section', { class: ['card', 'guide', `guide-${next.tone}`] }, [
+    el('div', { class: 'guide-body' }, [
+      stepper,
+      el('h3', { class: 'guide-title', text: next.title }),
+      el('p', { class: 'guide-text', text: next.text }),
+      ...(next.cards || []).map((c) => flightCardEl(c, { needed: true })),
+      state.evaluate.error && next.stage === 'refly' ? el('p', { class: 'hint crit', text: `上次评估：${state.evaluate.error}` }) : null,
+      el('div', { class: 'row guide-actions' }, [...buttons, el('span', { class: 'guide-spacer' }), viewBtn]),
+    ]),
+  ]);
+}
+
+/** Expert cards, folded away in the simple view. */
+function foldSection(title, nodes, { open = false } = {}) {
+  const items = nodes.filter(Boolean);
+  if (!items.length) return null;
+  const details = el('details', { class: 'fold' }, [
+    el('summary', { class: 'fold-summary' }, [el('span', { text: title }), el('span', { class: 'hint', text: `${items.length} 项` })]),
+    el('div', { class: 'fold-body' }, items),
+  ]);
+  if (open) details.open = true;
+  return details;
+}
+
 /* ---------------- deconvolved step response plot ---------------- */
 
 const STEP_W = 480;
@@ -4578,8 +4756,12 @@ async function pickLogFile() {
   state.proposals = [];
   state.apply = {};
   state.fft.data = null;
+  state.plan = null;
   appendLog(infoEntry(`已选择日志：${file}`));
   renderStep(state.step);
+  // One action, one result: picking a log analyses it and drafts the advice.
+  // Both steps are read-only; nothing reaches the FC without the apply flow.
+  await runMetrics();
 }
 
 async function runMetrics() {
@@ -4607,7 +4789,11 @@ async function runMetrics() {
   state.fft.axis = 'roll';
   if (state.fft.data) appendLog(infoEntry('FFT 频谱就绪（roll / pitch / yaw）', 'state'));
   state.analysis.busy = false;
+  state.plan = null;
   renderStep(state.step);
+  // Drafting proposals is read-only (rules + plan + journal entry), so it
+  // follows the analysis automatically instead of waiting for a second click.
+  if (state.metrics) await proposeTunes();
 }
 
 async function proposeTunes() {
@@ -4835,7 +5021,10 @@ async function evaluateReflight() {
   paintStateBar();
   showOpProgress('复飞评估 / tune.evaluate …', null);
   const baselineId = lastAppliedProposalId();
-  const payload = baselineId ? { baselineId } : {};
+  // The main process judges THIS flight against the pre-change baseline, so
+  // it needs this flight: the already-computed metrics, or at least the file.
+  // (Sending only baselineId made every evaluation fail with "需要一份复飞日志".)
+  const payload = { ...(baselineId ? { baselineId } : {}), ...(state.metrics ? { metrics: state.metrics } : {}), ...(state.file ? { file: state.file } : {}) };
   const res = await run('复飞评估', () => window.bf.tune.evaluate(payload));
   showOpProgress(null);
   state.evaluate.busy = false;
@@ -4846,6 +5035,13 @@ async function evaluateReflight() {
     return;
   }
   const out = res.value && typeof res.value === 'object' ? res.value : {};
+  if (out.ok === false) {
+    state.evaluate.error = str(out.reason) || '评估失败';
+    state.evaluate.result = null;
+    appendLog(warnEntry(`复飞评估未完成：${state.evaluate.error}`));
+    renderStep(state.step);
+    return;
+  }
   state.evaluate.result = out;
   const reasons = Array.isArray(out.reasons) ? out.reasons : [];
   const worse = reasons.filter((r) => r?.worse).length;
@@ -5134,11 +5330,20 @@ function proposalCard(p, index, opts = {}) {
   );
 }
 
-function proposalsCard() {
+function proposalNode(p, i) {
+  const node = proposalCard(p, i);
+  node.id = `prop-${str(p?.id)}`;
+  if (state.focusProposal && state.focusProposal === p?.id) node.classList.add('is-focus');
+  return node;
+}
+
+function proposalsCard({ only = null } = {}) {
   if (!state.proposals.length) {
-    return card('建议 / Proposals', [el('p', { class: 'hint', text: '运行分析后点击「生成建议」；每条建议按固定顺序包含：哪里不对 → 证据 → 改什么（CLI）→ 为什么 → 飞什么动作验证 → 不写会怎样。' })]);
+    return card('建议 / Proposals', [el('p', { class: 'hint', text: '选择日志后会自动分析并给出建议；每条建议按固定顺序包含：哪里不对 → 证据 → 改什么（CLI）→ 为什么 → 飞什么动作验证 → 不写会怎样。' })]);
   }
-  return el('div', { class: 'proposals' }, state.proposals.map((p, i) => proposalCard(p, i)));
+  const list = only ? state.proposals.filter(only) : state.proposals;
+  if (!list.length) return null;
+  return el('div', { class: 'proposals' }, list.map((p) => proposalNode(p, state.proposals.indexOf(p))));
 }
 
 /* ---------------- FFT spectrum canvas ---------------- */
@@ -5445,9 +5650,51 @@ function renderAnalysis(body) {
   // How to fly, folded in here: it used to be its own page with no action on it.
   parts.push(flightGuidanceCard());
 
-  body.append(...parts.filter(Boolean));
+  if (state.view === 'simple') {
+    body.append(...simpleAnalysisParts(metrics, blockers));
+  } else {
+    body.append(guideCard(), ...parts.filter(Boolean));
+  }
   paintFft();
   paintStepPlot();
+}
+
+/**
+ * Simple view: the guide, the scorecard, the advice for the current stage and
+ * the cards to fly. Everything else is one click away in folded sections, and
+ * the same cards are built, so nothing is lost - only ordered by need.
+ */
+function simpleAnalysisParts(metrics, blockers) {
+  const out = [guideCard()];
+  if (metrics) {
+    if (blockers) out.push(banner('crit', '硬性阻断 / HARD STOP', [para('报告中存在阻断调参的硬件故障，禁止据此写入 PID/滤波参数。')]));
+    const sc = scorecardCard(state.plan?.scorecard || metrics.scorecard);
+    if (sc) out.push(sc);
+    // The guide card already tells the pilot what to re-fly; the evidence-gap
+    // notice would only repeat it here (it stays in the expert view).
+    const now = proposalsCard({ only: (p) => !p.stageNote && p.id !== 'evidence-gap' });
+    if (now) out.push(el('h3', { class: 'section-title', text: '这一轮的建议' }), now);
+    const later = state.proposals.filter((p) => p.stageNote);
+    if (later.length) out.push(foldSection('后续阶段的建议（先完成当前阶段）', [proposalsCard({ only: (p) => Boolean(p.stageNote) })]));
+    if (state.applied.size) out.push(evaluationCard());
+    out.push(
+      foldSection('详细数据（专业）', [
+        campaignCard(state.plan?.plan),
+        evidenceCard(metrics),
+        mechanicalCard(metrics),
+        stepResponseCard(metrics),
+        fftCard(),
+        metricsReportCard(metrics),
+        state.applied.size ? null : evaluationCard(),
+        ...aiAgentCard(),
+      ]),
+    );
+  }
+  out.push(
+    foldSection('日志来源与下载', [downloadCard(), downloadVerifyCard()], { open: state.connected && !metrics }),
+    foldSection('试飞科目（怎么飞才能分析得准）', [flightGuidanceCard()], { open: !metrics }),
+  );
+  return out.filter(Boolean);
 }
 
 /* ================================================================== *
@@ -6382,6 +6629,9 @@ if (window.__BF_UI_TEST__) {
     campaignCard,
     scorecardCard,
     journalCard,
+    guideCard,
+    nextAction,
+    setViewMode,
     stepResponseCard,
     flightGuidanceCard,
     drawSparkline,
