@@ -492,3 +492,24 @@ test('trimPackToBudget enforces the hard cap by dropping tail channels', () => {
   // Core channels are kept longest.
   assert.ok(pack.timeSeries.channels['gyroADC[0]'], 'gyro must survive trimming');
 });
+
+test('AI suggestions that loosen a filter are blocked when the log lacks high-throttle evidence', () => {
+  const parsed = {
+    verdict: 'x',
+    suggestions: [{
+      problem: 'D-term over-filtered',
+      diff: [
+        { param: 'dterm_lpf1_static_hz', from: 100, to: 110 },
+        { param: 'gyro_lpf1_static_hz', from: 250, to: 225 },
+      ],
+    }],
+  };
+  const blocked = screenAiSuggestions(parsed, { evidenceMissing: ['noiseOpen'] });
+  const p = blocked.proposals[0];
+  assert.deepEqual(p.diff.map((d) => d.param), ['gyro_lpf1_static_hz'], 'tightening stays, loosening goes');
+  assert.ok(p.cli.every((line) => !line.includes('dterm_lpf1_static_hz')));
+  assert.ok(p.blockedBy.some((n) => /高油门/.test(n)));
+
+  const allowed = screenAiSuggestions(parsed, { evidenceMissing: [] });
+  assert.ok(allowed.proposals[0].diff.some((d) => d.param === 'dterm_lpf1_static_hz'));
+});

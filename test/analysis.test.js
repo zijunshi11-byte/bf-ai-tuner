@@ -1033,17 +1033,16 @@ test('two motors at zero eRPM together is a desync even at moderate command (cra
   assert.equal(desync.blocksTuning, true, 'two motors desyncing together must block tuning');
 });
 
-test('computeMetrics reports the short-log, drop-rate, sample-rate and clipping faults with numbers', () => {
+test('computeMetrics reports evidence gaps (not a duration fault), drop-rate, sample-rate and clipping faults with numbers', () => {
   const shortLog = makeLog({ durationS: 5, gyro: () => new Array(5 * FS).fill(1) });
   const shortReport = computeMetrics(shortLog);
-  const tooShort = shortReport.faults.find((f) => f.code === 'SAMPLE_TOO_SHORT');
-  assert.ok(tooShort);
-  // Informational only: no duration requirement is imposed any more.
-  assert.equal(tooShort.severity, 'info');
-  assert.equal(tooShort.blocksTuning, false);
-  assert.match(tooShort.evidence, /5\.0 s/);
-  // A short log no longer blocks: the operator decides how much flying is enough.
+  // Duration is no longer a fault (HANDOFF §6.1): evidence.js decides per
+  // analysis whether the log holds enough, and a short log never blocks.
+  assert.equal(shortReport.faults.find((f) => f.code === 'SAMPLE_TOO_SHORT'), undefined);
   assert.equal(shortReport.blocksTuning, false);
+  assert.ok(shortReport.evidence, 'every report carries an evidence assessment');
+  assert.ok(shortReport.evidence.missing.includes('steps'), 'a constant-gyro log has no stick steps');
+  assert.match(shortReport.evidence.domains.steps.advice, /横滚还差 5 次有效打杆/);
 
   const dropped = makeLog({ durationS: 30, gyro: () => new Array(30 * FS).fill(1), overrides: { droppedFrames: 1000, dropRatePct: 3.2 } });
   const droppedReport = computeMetrics(dropped);
@@ -1182,7 +1181,11 @@ test('an empty or channel-less log yields zeroed metrics instead of throwing', (
   assert.equal(report.sampleQuality, 0);
   assert.equal(report.blocksTuning, true);
   assert.ok(report.faults.some((f) => f.code === 'GYRO_ABSENT'));
-  assert.ok(report.faults.some((f) => f.code === 'SAMPLE_TOO_SHORT'));
+  assert.deepEqual(
+    [...report.evidence.missing].sort(),
+    ['logging', 'noise', 'noiseOpen', 'propwash', 'rpm', 'steps', 'tracking'],
+    'an empty log has no evidence in any domain',
+  );
   assert.ok(report.warnings.length > 0);
 
   // computeMetrics() must also survive being handed nothing at all.

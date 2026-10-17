@@ -23,6 +23,7 @@
 import { STEP_LIMITS, FORBIDDEN_PARAMS } from '../../shared/contracts.js';
 import { noiseFloorDbfs } from './bbl-fft.js';
 import { recommendAxis, TF_TARGETS } from './transfer-tune.js';
+import { evidenceGapProposal, gateProposals } from './evidence.js';
 
 /** Axis index -> name. Blackbox axes are roll, pitch, yaw in that order. */
 export const AXES = ['roll', 'pitch', 'yaw'];
@@ -184,10 +185,16 @@ export function proposeTune(
     proposals.push(advisoryProposal(fault, metrics));
   }
 
+  // Evidence gate: a rule whose domain is short of data in this log stands
+  // down, and one advisory says what to fly to unlock it. Reports built by
+  // computeMetrics always carry `evidence`; hand-built metrics without it are
+  // not gated (unit fixtures exercise rule logic in isolation).
+  const { kept, withheld } = gateProposals(proposals.filter(Boolean), metrics.evidence);
+  const gap = withheld.length ? evidenceGapProposal(metrics.evidence, withheld) : null;
+
   // Highest confidence first, and never more than three actions at once - the
   // operator must be able to attribute the result of a change to that change.
-  const ranked = proposals
-    .filter(Boolean)
+  const ranked = kept
     .sort((a, b) => Number(b.safeToApply) - Number(a.safeToApply) || b.confidence - a.confidence);
   const top = ranked.slice(0, 3);
 
@@ -200,6 +207,8 @@ export function proposeTune(
     else if (bestFilter) top.push(bestFilter);
   }
 
+  // The gap notice never takes an action slot: it changes nothing.
+  if (gap) top.push(gap);
   return top;
 }
 

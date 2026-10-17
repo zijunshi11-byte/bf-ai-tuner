@@ -33,15 +33,14 @@
 import { bandPower, findPeaks, matchRpmHarmonics, noiseFloorDbfs, welchCross, welchPsd } from './bbl-fft.js';
 import { readCraftSettings } from './header-settings.js';
 import { recommendAxis } from './transfer-tune.js';
+import { assessEvidence, throttleProfile } from './evidence.js';
+import { deconvolveStepResponse } from './step-deconv.js';
 
 /** Betaflight logs `eRPM[n]` as electrical RPM / 100 (upstream viewer: rpm = value * 200 / motor_poles). */
 const BLACKBOX_ERPM_SCALE = 100;
 
 /** Nominal Betaflight gyro full scale, in deg/s, used by the clipping detector. */
 const GYRO_FULL_SCALE_DPS = 2000;
-
-/** A log shorter than this cannot support a tuning decision. */
-const MIN_USABLE_DURATION_S = 20;
 
 /** Drop rate above which the log is considered unreliable. */
 const MAX_DROP_RATE_PCT = 2;
@@ -51,8 +50,8 @@ const EXPECTED_SAMPLE_RATE_HZ = 2000;
 const SAMPLE_RATE_TOLERANCE = 0.1;
 
 /** Fault codes whose presence must block PID tuning (contract). */
-// A short log weakens the statistics but must not block advice - the operator
-// decides how much flying is enough.
+// Log duration is not a fault at all: whether a log is "enough" is decided per
+// analysis by evidence.js (steps, chops, spectrum averaging, high-throttle time).
 // GYRO_ABSENT belongs here: with no gyro channel there is nothing to analyse,
 // so any advice would be invented. Duration deliberately does NOT block.
 const BLOCKING_FAULTS = new Set([
@@ -954,9 +953,17 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
       warnings.push(`no descending-throttle segment found: propwash for ${name} is reported as 0`);
     }
 
+    // Rules read `step`: isolated one-frame steps, the measurement their
+    // thresholds were calibrated on. Real stick input is ramped by RC
+    // smoothing, so flight logs rarely contain such steps; `stepDeconv` is the
+    // PIDtoolbox-style Wiener deconvolution over every window with stick input.
+    // It feeds the evidence count, the UI step plot and the AI pack, but no
+    // P/I/D rule yet: it includes feedforward, so its overshoot cannot be
+    // attributed to P without a calibration that has not been flown.
     const step = gyro && setpoint && sampleRateHz
-      ? estimateStepResponse(setpoint, gyro, sampleRateHz)
-      : { overshootPct: 0, riseTimeMs: 0, settlingTimeMs: 0, steadyStateErrorPct: 0, latencyMs: 0, samples: 0 };
+      ? { ...estimateStepResponse(setpoint, gyro, sampleRateHz), method: 'isolated' }
+      : { overshootPct: 0, riseTimeMs: 0, settlingTimeMs: 0, steadyStateErrorPct: 0, latencyMs: 0, samples: 0, method: 'none' };
+    const stepDeconv = gyro && setpoint && sampleRateHz ? deconvolveStepResponse(setpoint, gyro, sampleRateHz) : null;
     if (step.samples > 0 && step.samples < 3) {
       warnings.push(`only ${step.samples} clean setpoint step(s) found on ${name}: step metrics are reported as 0`);
     }
@@ -994,6 +1001,7 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
       dTermRms,
       dTermToGyroRatio: gyroRms > 0 ? round(dTermRms / gyroRms) : 0,
       step,
+      stepDeconv,
       trackingGainDb: tracking.gainDb,
       trackingCoherence: tracking.coherence,
       trackingPhaseDeg: tracking.phaseDeg,
@@ -1110,13 +1118,6 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
     warnings.push('sample rate mismatch could not be checked: fewer than 8 usable frame timestamps');
   }
 
-  if (durationS < MIN_USABLE_DURATION_S) {
-    // Informational only: no duration or manoeuvre requirement is imposed.
-    faults.push(
-      fault('SAMPLE_TOO_SHORT', 'info', `log is ${durationS.toFixed(1)} s long; frequency analysis is less stable on short logs`),
-    );
-  }
-
   if (!erpm.length) {
     faults.push(fault('NO_RPM_DATA', 'info', 'no eRPM[n] channel is present in the log, so RPM harmonic matching is unavailable'));
   }
@@ -1147,7 +1148,7 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
 
   const blocksTuning = faults.some((f) => f.blocksTuning);
 
-  return {
+  const report = {
     file: file ?? log.file ?? '',
     logIndex: Number.isFinite(log.index) ? log.index : 0,
     sampleRateHz,
@@ -1165,7 +1166,12 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
     // The log describes the craft that produced it: PID, filter, loop rate.
     // Offline analysis has no FC to ask, so the advice reads these instead.
     craftSettings: readCraftSettings(log.header || {}),
+    // Seconds per throttle quarter; opening a filter needs high-throttle time.
+    throttleProfile: throttleProfile(readChannel(log, 'throttle'), sampleRateHz),
   };
+  // What each analysis domain has to work with (replaces a duration gate).
+  report.evidence = assessEvidence(report);
+  return report;
 }
 
 export default { computeMetrics, detectDescentSegments, estimateStepResponse, trackingMetrics, iTermWindupScore, computeSampleQuality, pidErrorByDeflection };

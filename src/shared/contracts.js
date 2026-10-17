@@ -280,7 +280,10 @@ export const EVENT_KIND = [
  * @property {number} propwashEvents
  * @property {number} dTermRms
  * @property {number} dTermToGyroRatio
- * @property {StepResponse} step
+ * @property {StepResponse} step        isolated one-frame steps; what the P/I/D rules read
+ * @property {(StepResponse & {method:'deconvolution', delay50Ms:number, windowsTried:number,
+ *             curve:{dtMs:number, t0Ms:number, values:number[]}|null})|null} [stepDeconv]
+ *           Wiener-deconvolved setpoint->gyro step (includes feedforward); evidence + display only
  * @property {number} trackingGainDb
  * @property {number} trackingCoherence
  * @property {number} trackingPhaseDeg
@@ -312,7 +315,7 @@ export const EVENT_KIND = [
 /**
  * @typedef {object} Fault
  * @property {string} code     GYRO_CLIPPING | MOTOR_DESYNC | SEVERE_VIBRATION |
- *                             FRAME_DROP_HIGH | SAMPLE_RATE_MISMATCH | SAMPLE_TOO_SHORT |
+ *                             FRAME_DROP_HIGH | SAMPLE_RATE_MISMATCH |
  *                             NO_RPM_DATA | MOTOR_SATURATION | GYRO_ABSENT | LOG_TRUNCATED
  * @property {'info'|'warn'|'critical'} severity
  * @property {string} evidence  concrete numbers, never a bare claim
@@ -335,6 +338,10 @@ export const EVENT_KIND = [
  * @property {boolean} blocksTuning
  * @property {string[]} warnings
  * @property {number} sampleQuality       0..1 composite
+ * @property {{available:boolean, bandsS:number[], bandsPct:number[], highS:number, maxPct:number}} [throttleProfile]
+ * @property {{domains:Record<string,{ok:boolean,label:string,have:any,need:any,axes?:object,advice:string}>,
+ *             missing:string[], flights:string[]}} [evidence]
+ *           per-domain evidence sufficiency (analysis/evidence.js); replaces a duration gate
  */
 
 /**
@@ -345,7 +352,8 @@ export const EVENT_KIND = [
  * @property {string[]} cli                "CLI 建议" - exact `set x = y` lines
  * @property {string} verification          "复飞验证" - what to fly + what to expect
  * @property {number} confidence            0..1
- * @property {'pid'|'filter'|'hardware'|'none'} category
+ * @property {'pid'|'filter'|'hardware'|'evidence'|'none'} category
+ *           'evidence' = advice withheld for lack of data; never carries a diff
  * @property {boolean} safeToApply
  * @property {string[]} blockedBy
  * @property {{param:string, from:number|string, to:number|string, deltaPct?:number}[]} diff

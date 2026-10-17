@@ -21,6 +21,7 @@
  */
 
 import { filterDiff, isTunableParam } from './ai-tune.js';
+import { opensFilter } from './evidence.js';
 import { FORBIDDEN_PARAMS, STEP_LIMITS } from '../../shared/contracts.js';
 
 /** Defaults target an OpenAI-compatible `/chat/completions` endpoint. */
@@ -90,6 +91,18 @@ function axisSummary(axis) {
           settlingTimeMs: round(a.step.settlingTimeMs, 1),
           latencyMs: round(a.step.latencyMs, 1),
           samples: a.step.samples ?? 0,
+        }
+      : null,
+    // Wiener-deconvolved setpoint->gyro step (PIDtoolbox method). Includes
+    // feedforward: overshoot here is what the pilot feels, not proof of high P.
+    stepDeconv: a.stepDeconv && a.stepDeconv.samples
+      ? {
+          overshootPct: round(a.stepDeconv.overshootPct, 1),
+          delay50Ms: round(a.stepDeconv.delay50Ms, 1),
+          riseTimeMs: round(a.stepDeconv.riseTimeMs, 1),
+          steadyStateErrorPct: round(a.stepDeconv.steadyStateErrorPct, 1),
+          windows: a.stepDeconv.samples,
+          includesFeedforward: true,
         }
       : null,
     peaks: (a.peaks || [])
@@ -450,6 +463,10 @@ export function buildEvidencePack({
       rpmMin: m.rpmMin ?? null,
       rpmMax: m.rpmMax ?? null,
       sampleQuality: round(m.sampleQuality, 2),
+      throttleHighS: m.throttleProfile?.highS ?? null,
+      // Which analysis domains this log can support; a short domain means the
+      // rule engine withheld advice there, and so should the model.
+      evidenceMissing: m.evidence?.missing ?? null,
       warnings: L.id === 'compact' ? (m.warnings || []).slice(0, 8) : m.warnings || [],
     },
     faults: (m.faults || []).map((f) => ({
@@ -629,6 +646,8 @@ export const AI_SYSTEM_PROMPT = `你是一名 5 寸竞速穿越机（Betaflight 
 8. 如果输入包里有 timeSeries（时间序列包络），结合它判断问题出现的时机与工况（例如抖动只出现在高油门还是收油门段、哪一段电机掉速、陀螺何时饱和），并把这类观察写进 evidence。
 9. 如果输入包里有 segments（分段统计），用它定位问题集中在整段飞行的哪个阶段，并引用具体段号与秒数。
 10. 如果输入包里有 blackboxHeader（完整飞控配置），可据此核对 PID/滤波/TPA/RPM 设置是否互相矛盾；但只能建议上面白名单里的参数。
+11. log.evidenceMissing 列出本日志证据不足的分析领域（steps/tracking/propwash/noise/noiseOpen/rpm/logging）。这些领域不要给改参建议，只说明需要补飞什么；包含 noiseOpen 时绝不建议放宽任何滤波（提高低通截止、减少陷波/RPM 谐波）。
+12. axes.*.stepDeconv 是反卷积得到的 setpoint→gyro 阶跃响应，包含前馈作用：其中的超调不能单独作为降 P 的依据。
 
 只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码块。格式：
 {
@@ -892,7 +911,10 @@ export function enforceStepLimits(diff = []) {
  * respect the whitelist, and a blocked param must still be *visible* rather
  * than silently dropped - an operator needs to know the model tried.
  */
-export function screenAiSuggestions(parsed, { idPrefix = 'ai' } = {}) {
+export function screenAiSuggestions(parsed, { idPrefix = 'ai', evidenceMissing = null } = {}) {
+  // Third screen (evidence): a log without high-throttle coverage cannot
+  // justify loosening any filter, however the model words it.
+  const noOpening = Array.isArray(evidenceMissing) && evidenceMissing.includes('noiseOpen');
   const suggestions = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
   const proposals = [];
 
@@ -911,7 +933,9 @@ export function screenAiSuggestions(parsed, { idPrefix = 'ai' } = {}) {
 
     // Second screen: the whitelist checked the *names*, this checks the
     // *magnitudes* against the same conservative step budget the rules use.
-    const { diff: bounded, clamped, rejected } = enforceStepLimits(allowed);
+    const { diff: stepped, clamped, rejected } = enforceStepLimits(allowed);
+    const evidenceBlocked = noOpening ? stepped.filter((d) => opensFilter([d])) : [];
+    const bounded = evidenceBlocked.length ? stepped.filter((d) => !evidenceBlocked.includes(d)) : stepped;
 
     // Prefer the model's own CLI, but re-derive it from the screened diff so a
     // blocked, clamped or hallucinated line can never reach the copy button.
@@ -921,6 +945,9 @@ export function screenAiSuggestions(parsed, { idPrefix = 'ai' } = {}) {
     if (blockedParams.length) notes.push(`模型建议了不可写参数，已拦截：${blockedParams.join(', ')}`);
     if (clamped.length) notes.push(`超出保守步长，已收敛：${clamped.join('；')}`);
     if (rejected.length) notes.push(`无法校验步长，已丢弃：${rejected.join('；')}`);
+    if (evidenceBlocked.length) {
+      notes.push(`日志缺少高油门数据，放宽滤波已拦截：${evidenceBlocked.map((d) => `${d.param} ${d.from}→${d.to}`).join('；')}`);
+    }
 
     proposals.push({
       id: `${idPrefix}-${i + 1}`,
@@ -965,7 +992,7 @@ export async function runAiAnalysis({ config, pack, fetchImpl } = {}) {
       model: completion.model,
     };
   }
-  const screened = screenAiSuggestions(parsed);
+  const screened = screenAiSuggestions(parsed, { evidenceMissing: pack?.log?.evidenceMissing ?? null });
   return {
     ok: true,
     model: completion.model,
