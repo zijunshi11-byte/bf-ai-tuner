@@ -8,7 +8,7 @@ Handoff notes for whoever picks this up next (Codex or a human). Companion to
 [AGENTS.md](AGENTS.md), which lists the environment and protocol traps — read
 that first; it is not repeated here.
 
-**Status: builds, packages, and runs. 246/246 tests pass. Ready for continued
+**Status: builds, packages, and runs. 304/304 tests pass. Ready for continued
 development, with the open items listed in §6.**
 
 ---
@@ -36,7 +36,7 @@ Run all three, in order, from `bf-ai-tuner/`:
 
 ```bash
 npm run lint:syntax      # every source file parses
-npm test                 # 246 tests / 24 suites / 246 pass / 0 fail
+npm test                 # 304 tests / 304 pass / 0 fail
 bash scripts/build-mac.sh # out-of-tree build + ad-hoc sign + dist/*.dmg
 ```
 
@@ -45,7 +45,7 @@ Everything below was verified at the time of handoff:
 | Check | Result |
 |---|---|
 | `npm run lint:syntax` | every checked file parsed cleanly |
-| `npm test` | **246 / 246 pass**, 0 fail |
+| `npm test` | **304 / 304 pass**, 0 fail |
 | `bash scripts/build-mac.sh` | exit 0, `codesign --verify --deep --strict` → VALID |
 | Packaged app launch | OK; UI driven over CDP (port 9222) |
 | Signature | `Identifier=com.bf.aituner`, `Signature=adhoc`, `TeamIdentifier=not set` |
@@ -123,23 +123,46 @@ proposals were verified as diffs and against log analysis, not by flying them.
 
 ## 6. Open items
 
-### 6.1 Rule conflict needing a decision (unresolved)
+### 6.1 Capture duration — resolved (2026-10-17)
 
-The capture requirements contradict each other across two sets of instructions:
+Decision: **no duration gate**; evidence sufficiency replaces it.
+`SAMPLE_TOO_SHORT` is gone. `analysis/evidence.js` checks, per analysis domain,
+whether the log holds what that rule needs (clean stick input per axis, throttle
+chops, raw-gyro averaging, ≥ 2 s above 70 % throttle before any filter may be
+loosened, eRPM, logging rate). Rules whose domain is short stand down and one
+`evidence-gap` notice names the guided test flight (cards A–D) to fill it.
+`GYRO_ABSENT` remains blocking.
 
-- An explicit instruction was given to **remove the 30-second timer and the
-  single-manoeuvre requirement**.
-- The later consolidated spec says to **validate duration ≥ 30 s** and to
-  require a **30 s+ standard racing routine**.
+### 6.1a Improvement roadmap (P0–P3 done, P4 open)
 
-Current implementation follows the explicit instruction: duration is reported
-**informationally only** and never gates analysis. `SAMPLE_TOO_SHORT` is emitted
-as `info` with `blocksTuning: false`; the capture page has no timer and no
-manoeuvre requirement.
+Derived from a survey of similar tools (official Betaflight Autotune tab,
+PIDtoolbox, PID-Analyzer, bbx-analyzer, ArkanaDigital/pid-tuner, Debrief, FPVtune,
+betaflight-mcp). Done on this branch:
 
-Reinstating a hard ≥ 30 s gate means changing `bbl-metrics.js`, the capture page,
-and the tests. **Pick one; they cannot both hold.** Note that
-`GYRO_ABSENT` remains blocking — an empty log still refuses to give advice.
+- **P0** transfer-function rule never derives filter changes from tracking
+  coherence (upstream #5258) and never raises P/FF on a margin-short loop.
+- **P1** evidence gate + guided test-flight cards; Wiener-deconvolution step
+  response (`stepDeconv`). The isolated-step detector found **0** steps on every
+  real log; deconvolution finds 40–240 stick windows per axis.
+- **P2** mechanical health: per-motor 1x vibration (prop/shaft) and fixed-vs-moving
+  resonance classification. Static notches are no longer proposed for peaks that
+  move with RPM (btfl_002/btfl_all were getting 475/485 Hz notches for a motor
+  peak sweeping 289→375→473 Hz).
+- **P3** stage plan (logging → mechanical → filters → P/D → feel), racing
+  scorecard, per-quad journal (History page).
+
+Open:
+
+- **Step rules still read isolated steps only.** `stepDeconv` includes
+  feedforward (btfl_002, FF 120: 41–72 % "overshoot" at 2 ms delay), so it is
+  evidence + display + AI pack only. Calibrating overshoot/sluggish/I rules
+  against it needs flights with FF temporarily at 0 (PIDtoolbox method) and a
+  before/after on real hardware.
+- **P4 (undecided):** learned-plant PID simulator to predict a change before
+  flying it.
+- `filter-iterm-relax` (configuration-only) moves `iterm_relax_cutoff` 15 → 30 in
+  one step on btfl_001; iterm_relax is not a noise filter so the 10 % filter
+  budget does not apply, but the step is large — review.
 
 ### 6.2 Not implemented
 
@@ -164,6 +187,6 @@ rule are implemented on this branch — see `ruleFeedforward`,
 - Adding an IPC channel is a three-file change in a fixed order: `CH` in
   `src/shared/contracts.js` → mirror in `src/main/preload.cjs` → handler in
   `src/main/tools/registry.js`. A contract-drift test fails the suite otherwise.
-- Keep `npm test` green (currently 246/246); add a regression test with every fix.
+- Keep `npm test` green (currently 304/304); add a regression test with every fix.
 - The renderer has no in-repo test harness. Verify it by driving the packaged
   app over the DevTools Protocol, or with a throwaway DOM stub.

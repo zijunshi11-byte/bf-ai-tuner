@@ -15,7 +15,7 @@ debugging time — they are not theoretical.
 ```bash
 npm install            # ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ if the mirror is needed
 npm run lint:syntax    # parses every source file; run this first
-npm test               # node --test; must stay green (currently 246/246)
+npm test               # node --test; must stay green (currently 304/304)
 npm start              # run from source
 npm run build:mac      # THE macOS build. Never call electron-builder directly.
 ```
@@ -169,7 +169,24 @@ Treat every one of these as a hard requirement, not a preference:
    filter ≤ 10 % budget the rules obey). A model-proposed diff is never
    `safeToApply`, and applying anything is still the audited two-phase token
    flow. The whitelist alone is NOT enough: `dterm_lpf1_static_hz: 82 -> 120` is
-   a legal parameter name and an illegal step.
+   a legal parameter name and an illegal step. A third screen applies the
+   evidence gate: without high-throttle evidence (`noiseOpen`), any model diff
+   that loosens a filter is removed.
+11. **Advice needs evidence, not duration.** `analysis/evidence.js` decides per
+    domain (steps, tracking, propwash, noise, noiseOpen, rpm, logging) whether
+    the log can support a rule; short domains withhold their proposals and one
+    diff-free `evidence-gap` notice names the test flight to fly. **Loosening any
+    filter** (raising a low-pass cutoff, fewer dyn-notches / RPM harmonics)
+    requires ≥ 2 s above 70 % throttle — opening the D-term LPF on hover-only
+    data is the btfl_003 crash path. There is no duration gate (HANDOFF §6.1).
+12. **Never derive filter changes from tracking coherence.** The transfer
+    function fit (setpoint→gyro) says nothing about the gyro noise floor;
+    upstream did exactly this and stripped D-term filtering on clean logs
+    (betaflight-configurator#5258, flyaway on arm). Below the phase-margin
+    target the transfer rule may add D but never raises P/FF.
+13. **A peak that moves with motor RPM never gets a static notch.**
+    `analysis/mechanical.js` classifies raw-gyro peaks across motor-speed bands;
+    only fixed (frame) resonances are static-notch material.
 10. **The analysis pack is budget-bounded.** `PACK_LEVELS` (compact ≤ 9 KB /
     standard ≤ 120 KB / full ≤ 400 KB) cap the serialised characters; the time
     series is sized against what is actually left after the header, stats,
@@ -192,7 +209,11 @@ src/main/msp/               transport, client (self-healing), codec, helper
 src/main/fc/                identification + settings reader
 src/main/blackbox/          blackbox config/erase/download, msc.js
 src/main/backup/            versioned snapshots + rollback packages
-src/main/analysis/          bbl-decode, bbl-fft, bbl-metrics, ai-tune, ai-agent, compare-runs
+src/main/analysis/          bbl-decode, bbl-fft, bbl-metrics, ai-tune, ai-agent, compare-runs,
+                            evidence (per-domain gate + test-flight cards), step-deconv
+                            (Wiener step response), mechanical (per-motor 1x, resonance
+                            class), campaign (stage plan), scorecard (racing KPIs)
+src/main/journal/           per-quad tuning journal (userData/journal, local only)
 src/main/ai-config.js       AI endpoint + API key store (userData, mode 0600)
 src/main/safety/guard.js    the write gate
 src/shared/contracts.js     frozen IPC contract (CH), forbidden params, typedefs
@@ -224,7 +245,7 @@ handler in `registry.js` — in that order.
 
 ## 6. Testing
 
-- `npm test` runs `node --test` over `test/`. Keep it green; **246/246** is the
+- `npm test` runs `node --test` over `test/`. Keep it green; **304/304** is the
   current baseline.
 - Test names state behaviour, not implementation. Prefer a regression test for
   every bug fixed.
@@ -232,6 +253,11 @@ handler in `registry.js` — in that order.
   `backup-store`, `bbl-*`). Use `VirtualTransport` for session/integration tests
   instead of hardware.
 - Never commit `.bbl` logs, `captures/`, `dist/`, or `node_modules/`.
+- Real logs for manual checks live outside the repo (e.g. `~/Desktop/btfl_00*.bbl`);
+  drive the renderer with `--user-data-dir=<scratch>` so CDP runs never write
+  reports or journal entries into the real app data.
+- `Number(null) === 0`: a missing measurement read through a bare `Number()`
+  becomes a perfect zero. Every `num()` helper treats null/undefined/'' as null.
 
 ---
 
