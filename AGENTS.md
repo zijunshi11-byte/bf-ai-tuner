@@ -15,7 +15,7 @@ debugging time — they are not theoretical.
 ```bash
 npm install            # ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ if the mirror is needed
 npm run lint:syntax    # parses every source file; run this first
-npm test               # node --test; must stay at 168/168 passing
+npm test               # node --test; must stay green (currently 246/246)
 npm start              # run from source
 npm run build:mac      # THE macOS build. Never call electron-builder directly.
 ```
@@ -160,6 +160,24 @@ Treat every one of these as a hard requirement, not a preference:
    (`rollbackSafety()` enforces this).
 8. **Propose, don't decide.** Recording/analysis stays read-only for unknown
    boards.
+9. **The AI agent is untrusted input.** `src/main/analysis/ai-agent.js` may send
+   an analysis pack to a user-configured OpenAI-compatible endpoint (never the
+   raw `.bbl`; the pack is a serialised, budget-bounded summary). Everything the
+   model returns passes TWO screens before it can reach a copy button or a diff:
+   `filterDiff` (parameter names — `FORBIDDEN_PARAMS` + the `isTunableParam`
+   whitelist) and `enforceStepLimits` (magnitudes — the same P/I ≤ 7 %, D ±3,
+   filter ≤ 10 % budget the rules obey). A model-proposed diff is never
+   `safeToApply`, and applying anything is still the audited two-phase token
+   flow. The whitelist alone is NOT enough: `dterm_lpf1_static_hz: 82 -> 120` is
+   a legal parameter name and an illegal step.
+10. **The analysis pack is budget-bounded.** `PACK_LEVELS` (compact ≤ 9 KB /
+    standard ≤ 120 KB / full ≤ 400 KB) cap the serialised characters; the time
+    series is sized against what is actually left after the header, stats,
+    spectra and segments, and `trimPackToBudget` verifies the result. Blowing
+    the model's context window is a hard failure, not a warning. `buildTimeSeries`
+    must stay fair-share: greedy filling gave gyro maximum resolution and
+    dropped every motor/eRPM channel — the exact evidence a desync diagnosis
+    needs.
 
 ---
 
@@ -174,7 +192,8 @@ src/main/msp/               transport, client (self-healing), codec, helper
 src/main/fc/                identification + settings reader
 src/main/blackbox/          blackbox config/erase/download, msc.js
 src/main/backup/            versioned snapshots + rollback packages
-src/main/analysis/          bbl-decode, bbl-fft, bbl-metrics, ai-tune, compare-runs
+src/main/analysis/          bbl-decode, bbl-fft, bbl-metrics, ai-tune, ai-agent, compare-runs
+src/main/ai-config.js       AI endpoint + API key store (userData, mode 0600)
 src/main/safety/guard.js    the write gate
 src/shared/contracts.js     frozen IPC contract (CH), forbidden params, typedefs
 src/renderer/               vanilla-JS UI (index.html, styles.css, renderer.js)
@@ -205,7 +224,7 @@ handler in `registry.js` — in that order.
 
 ## 6. Testing
 
-- `npm test` runs `node --test` over `test/`. Keep it green; **168/168** is the
+- `npm test` runs `node --test` over `test/`. Keep it green; **246/246** is the
   current baseline.
 - Test names state behaviour, not implementation. Prefer a regression test for
   every bug fixed.

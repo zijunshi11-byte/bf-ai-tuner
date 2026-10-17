@@ -31,6 +31,8 @@
  */
 
 import { bandPower, findPeaks, matchRpmHarmonics, noiseFloorDbfs, welchCross, welchPsd } from './bbl-fft.js';
+import { readCraftSettings } from './header-settings.js';
+import { recommendAxis } from './transfer-tune.js';
 
 /** Betaflight logs `eRPM[n]` as electrical RPM / 100 (upstream viewer: rpm = value * 200 / motor_poles). */
 const BLACKBOX_ERPM_SCALE = 100;
@@ -251,7 +253,68 @@ function propwashFromSegments(gyro, throttle, sampleRateHz) {
   result.bandPower = bandPower(averaged, 20, 100);
   result.totalPower = bandPower(averaged, 10, high);
   result.index = result.totalPower > 0 ? clamp01(result.bandPower / result.totalPower) : 0;
+
+  // The absolute band fraction above is diluted by however noisy the craft is:
+  // motor noise inflates the denominator, so a loud-but-propwash-afflicted quad
+  // scores LOWER than a quiet one. Propwash is therefore judged RELATIVELY -
+  // how much more the 20-100 Hz band dominates during descents than in level
+  // flight. That is scale-free and is what a tuner reads off the spectrogram.
+  const levelSegments = complementSegments(segments, length, sampleRateHz);
+  const levelAveraged = averageSpectra(gyro, levelSegments, sampleRateHz, commonSize);
+  if (levelAveraged) {
+    const levelBand = bandPower(levelAveraged, 20, 100);
+    const levelTotal = bandPower(levelAveraged, 10, high);
+    const levelFraction = levelTotal > 0 ? levelBand / levelTotal : 0;
+    const descentFraction = result.index;
+    result.levelFraction = levelFraction;
+    result.levelSegments = levelSegments.length;
+    // > 1 means descents are more low-frequency-noisy than level flight.
+    result.score = levelFraction > 1e-6 ? descentFraction / levelFraction : 1;
+  } else {
+    result.score = 1;
+    result.levelFraction = null;
+    result.levelSegments = 0;
+  }
   return result;
+}
+
+/** The gaps between the descent segments: level / cruise flight. */
+function complementSegments(segments, length, sampleRateHz) {
+  const minSamples = Math.max(16, Math.round(0.15 * sampleRateHz));
+  const out = [];
+  let cursor = 0;
+  for (const segment of segments) {
+    if (segment.start - cursor >= minSamples) out.push({ start: cursor, end: segment.start });
+    cursor = Math.max(cursor, segment.end);
+  }
+  if (length - cursor >= minSamples) out.push({ start: cursor, end: length });
+  return out;
+}
+
+/** Weighted average spectrum over a set of segments, or null when too short. */
+function averageSpectra(gyro, segments, sampleRateHz, segmentSize) {
+  if (!segments.length) return null;
+  const spectra = [];
+  for (const segment of segments) {
+    const slice = gyro.slice(segment.start, segment.end);
+    if (slice.length < 16) continue;
+    const size = Math.max(16, Math.min(segmentSize, 2 ** Math.floor(Math.log2(slice.length))));
+    const spectrum = welchPsd(slice, sampleRateHz, { segmentSize: size });
+    if (spectrum.psd.length) spectra.push({ spectrum, weight: slice.length });
+  }
+  if (!spectra.length) return null;
+
+  const reference = spectra[0].spectrum;
+  const bins = reference.freqs.length;
+  const acc = new Float64Array(bins);
+  let totalWeight = 0;
+  for (const { spectrum, weight } of spectra) {
+    if (spectrum.freqs.length !== bins) continue;
+    for (let k = 0; k < bins; k++) acc[k] += spectrum.psd[k] * weight;
+    totalWeight += weight;
+  }
+  if (!totalWeight) return null;
+  return { freqs: reference.freqs, psd: Array.from(acc, (v) => v / totalWeight), binHz: reference.binHz };
 }
 
 /* ------------------------------------------------------------------ *
@@ -503,6 +566,61 @@ export function iTermWindupScore(iterm, setpoint, gyro) {
 }
 
 /* ------------------------------------------------------------------ *
+ * PID error x stick deflection (PIDtoolbox-style)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Mean |setpoint - gyro| bucketed by |setpoint| as a fraction of its own p95
+ * (the metric PIDtoolbox plots as "PID error x % stick deflection").
+ *
+ * A healthy loop keeps the error roughly flat across deflection. A strongly
+ * rising slope means the loop runs out of authority exactly at large inputs
+ * (too little P / motor headroom); a flat but large error at every deflection
+ * is latency instead (feedforward / filtering), which P cannot fix.
+ *
+ * @returns {{means:number[], slopeRatio:number, samples:number}}
+ *   `means` has one entry per bucket (0 for empty buckets), `slopeRatio` is
+ *   the last non-empty bucket's mean over the first's (0 when not measurable).
+ */
+export function pidErrorByDeflection(setpoint, gyro, { buckets = 5 } = {}) {
+  const empty = { means: [], slopeRatio: 0, samples: 0 };
+  const sp = toFloat(setpoint);
+  const gy = toFloat(gyro);
+  if (!sp || !gy) return empty;
+  const n = Math.min(sp.length, gy.length);
+  if (n < 32) return empty;
+
+  const absSp = new Float64Array(n);
+  for (let k = 0; k < n; k++) absSp[k] = Math.abs(sp[k]);
+  const reference = percentile(absSp, 0.95);
+  if (!(reference > 0)) return empty;
+
+  const sums = new Float64Array(buckets);
+  const counts = new Int32Array(buckets);
+  for (let k = 0; k < n; k++) {
+    const b = Math.min(buckets - 1, Math.floor((absSp[k] / reference) * buckets));
+    sums[b] += Math.abs(sp[k] - gy[k]);
+    counts[b]++;
+  }
+
+  const means = [];
+  let first = 0;
+  let last = 0;
+  let samples = 0;
+  for (let b = 0; b < buckets; b++) {
+    const mean = counts[b] ? sums[b] / counts[b] : 0;
+    means.push(round(mean));
+    if (counts[b]) {
+      if (!first) first = mean;
+      last = mean;
+      samples += counts[b];
+    }
+  }
+  const slopeRatio = first > 0 ? round(last / first, 2) : 0;
+  return { means, slopeRatio, samples };
+}
+
+/* ------------------------------------------------------------------ *
  * Motor helpers
  * ------------------------------------------------------------------ */
 
@@ -540,71 +658,130 @@ function motorSaturationPct(motors, motorMaxRef) {
   return round((saturated / length) * 100, 2);
 }
 
-/** eRPM dropouts, or a motor at idle while its neighbours are spinning hard. */
-function detectDesync(log, polePairs) {
-  const erpm = erpmChannels(log);
-  const evidence = { kind: 'none', events: 0, samples: 0, detail: '' };
+/**
+ * Motor desync detection.
+ *
+ * A desync is a *command-feedback mismatch*: the flight controller keeps
+ * commanding a motor to spin hard while its eRPM reads near zero for a
+ * sustained run. eRPM alone cannot distinguish a stopped motor from one that
+ * is legitimately idling, and motor commands alone carry no RPM information -
+ * only the two together are sufficient.
+ *
+ * Two false positives this corrects:
+ *
+ * 1. A hard roll/yaw legitimately commands the inner motors to minimum while
+ *    the outer motors spin to the moon. Comparing eRPM *ratios* therefore
+ *    flagged the idling motors as "desynced" on every aggressive manoeuvre:
+ *    the fastest motor can hit 200 k eRPM, so "10% of the fastest" is 20 k
+ *    eRPM - well above a motor that is correctly idling at ~8 k eRPM. The
+ *    fix compares against an *absolute* near-zero floor instead, and only
+ *    treats a motor as a dropout while it is still *commanded* to spin.
+ *
+ * 2. Bidirectional DShot RPM telemetry drops packets during hard braking and
+ *    roll reversals, logging 0 eRPM while the command has already been pulled
+ *    back to spin the motor down. That is telemetry noise, not a desync. A
+ *    near-zero eRPM counts only while the FC is still demanding real throttle.
+ *
+ * A third signal covers the crash case: two or more motors reading near-zero
+ * eRPM *simultaneously* while the quad is still flying. A single motor at zero
+ * can be braking or telemetry noise; two motors at zero together means the FC
+ * has lost two corners at once and is tumbling - the signature of a real
+ * desync-induced crash (btfl_003.bbl), and it fires regardless of the
+ * individual commands because the FC is past the point of coherent commands.
+ *
+ * With no motor command channel, the detector falls back to the absolute
+ * eRPM floor only (a motor near zero while another is clearly flying) - the
+ * honest but weaker signal. A dropout must also persist for several
+ * consecutive samples; one low sample is normal at zero crossings and during
+ * motor start/stop.
+ */
+const DESYNC_MIN_RUN = 5; // samples; 2.5 ms at 2 kHz
+const DESYNC_FLYING_ERPM = 5000; // eRPM: at least one motor above this => quad is flying
+const DESYNC_ERPM_FLOOR = 2000; // eRPM: a commanded motor below this is "stopped" (idle is ~8k+)
+const DESYNC_COMMAND_FRACTION = 0.5; // command above this fraction of its range => "commanded to spin"
+const DESYNC_MIN_STOPPED_MOTORS = 2; // motors near zero at once => crash signature
 
-  if (erpm.length >= 2) {
+function detectDesync(log, _polePairs) {
+    const evidence = { kind: 'none', events: 0, samples: 0, detail: '' };
+    const erpm = erpmChannels(log);
+
+    if (erpm.length < 2) {
+        evidence.kind = 'unavailable';
+        evidence.detail =
+            'no eRPM[n] channel is present, so desync cannot be assessed - motor command spread is not evidence of it';
+        return evidence;
+    }
+
+    const motors = motorChannels(log);
+    const hasCommand = motors.length > 0;
+
+    // Observed command range, so "commanded to spin" is decided scale-independently
+    // (DShot logs 48..2047, PWM logs 1000..2000).
+    let cmdMin = Infinity;
+    let cmdMax = -Infinity;
+    for (const channel of motors) {
+        for (let k = 0; k < channel.length; k++) {
+            if (channel[k] < cmdMin) cmdMin = channel[k];
+            if (channel[k] > cmdMax) cmdMax = channel[k];
+        }
+    }
+    const spinCommand = cmdMin + DESYNC_COMMAND_FRACTION * (cmdMax - cmdMin);
+
     const length = Math.min(...erpm.map((c) => c.length));
     let events = 0;
     let firstIndex = -1;
+    let run = 0;
+
     for (let k = 0; k < length; k++) {
-      let maxErpm = 0;
-      for (const channel of erpm) maxErpm = Math.max(maxErpm, channel[k] * BLACKBOX_ERPM_SCALE);
-      if (maxErpm < 5000) continue; // motors essentially stopped: not a desync
-      let dropout = false;
-      for (const channel of erpm) {
-        const value = channel[k] * BLACKBOX_ERPM_SCALE;
-        if (value < 0.1 * maxErpm) dropout = true;
-      }
-      if (dropout) {
-        events++;
-        if (firstIndex < 0) firstIndex = k;
-      }
+        let maxErpm = 0;
+        for (const channel of erpm) maxErpm = Math.max(maxErpm, channel[k] * BLACKBOX_ERPM_SCALE);
+
+        if (maxErpm < DESYNC_FLYING_ERPM) {
+            run = 0; // motors essentially stopped - not a desync
+            continue;
+        }
+
+        let dropout = false;
+        let stopped = 0;
+        for (let m = 0; m < erpm.length; m++) {
+            if (erpm[m][k] * BLACKBOX_ERPM_SCALE >= DESYNC_ERPM_FLOOR) continue; // still spinning
+            stopped++;
+            // This motor reads near-zero eRPM. It is a desync only while the FC
+            // is still commanding it to spin; a motor being pulled back to idle
+            // during a reversal or braking is supposed to slow down.
+            const command = hasCommand && motors[m] ? motors[m][k] : null;
+            if (command === null || command >= spinCommand) dropout = true;
+        }
+        // Two or more motors at zero at once while flying is a crash signature,
+        // independent of the per-motor command check above.
+        if (stopped >= DESYNC_MIN_STOPPED_MOTORS) dropout = true;
+
+        if (!dropout) {
+            run = 0;
+            continue;
+        }
+
+        run++;
+        if (run === DESYNC_MIN_RUN) {
+            // Only count once the dropout has proven sustained.
+            events++;
+            if (firstIndex < 0) firstIndex = k - DESYNC_MIN_RUN + 1;
+        } else if (run > DESYNC_MIN_RUN) {
+            events++; // keep counting the length of the sustained dropout
+        }
     }
+
     if (events > 0) {
-      evidence.kind = 'erpm';
-      evidence.events = events;
-      evidence.samples = length;
-      evidence.detail =
-        `${events} of ${length} samples (${((events / length) * 100).toFixed(3)}%) have one eRPM channel ` +
-        `below 10% of the fastest motor while the fastest is above 5000 eRPM; first at sample ${firstIndex}`;
+        evidence.kind = 'erpm';
+        evidence.events = events;
+        evidence.samples = length;
+        evidence.detail =
+            `${events} consecutive samples (${((events / length) * 100).toFixed(3)}%) hold a motor below ` +
+            `${DESYNC_ERPM_FLOOR} eRPM while another motor is above ${DESYNC_FLYING_ERPM} eRPM ` +
+            `(sustained command-feedback dropout, or two+ motors at zero together = crash); ` +
+            `first run at sample ${firstIndex}`;
     }
     return evidence;
-  }
-
-  const motors = motorChannels(log);
-  const throttle = readChannel(log, 'throttle');
-  if (motors.length < 2 || !throttle) return evidence;
-
-  const length = Math.min(...motors.map((m) => m.length), throttle.length);
-  const span = percentile(throttle, 0.95) - percentile(throttle, 0.05);
-  const highThrottle = percentile(throttle, 0.05) + 0.5 * span;
-  let events = 0;
-  let firstIndex = -1;
-  for (let k = 0; k < length; k++) {
-    if (throttle[k] < highThrottle) continue;
-    let maxMotor = 0;
-    let minMotor = Infinity;
-    for (const motor of motors) {
-      maxMotor = Math.max(maxMotor, motor[k]);
-      minMotor = Math.min(minMotor, motor[k]);
-    }
-    if (maxMotor >= 1500 && minMotor <= 1050) {
-      events++;
-      if (firstIndex < 0) firstIndex = k;
-    }
-  }
-  if (events > 0) {
-    evidence.kind = 'motor';
-    evidence.events = events;
-    evidence.samples = length;
-    evidence.detail =
-      `${events} samples with throttle above ${highThrottle.toFixed(0)} and a motor at or below 1050 ` +
-      `while another reaches at least 1500 (first at sample ${firstIndex})`;
-  }
-  return evidence;
 }
 
 /* ------------------------------------------------------------------ *
@@ -789,6 +966,13 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
       ? trackingMetrics(setpoint, gyro, sampleRateHz)
       : { gainDb: 0, coherence: 0, phaseDeg: 0, bins: 0 };
 
+    const transfer = gyro && setpoint && sampleRateHz
+      ? recommendAxis(setpoint, gyro, sampleRateHz)
+      : null;
+    const transferSummary = transfer
+      ? { metrics: transfer.metrics, scales: transfer.scales, coherent: transfer.coherent }
+      : null;
+
     const gyroRms = gyro ? round(rms(gyro)) : 0;
     const dTermRms = dTerm ? round(rms(dTerm)) : 0;
 
@@ -805,6 +989,7 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
       filterAttenuationDb,
       motorNoisePeakHz: dominantHighFrequencyPeak(spectrum, 150, 4),
       propwashIndex: round(propwash.index),
+      propwashScore: round(propwash.score ?? 1),
       propwashEvents: propwash.usableSegments,
       dTermRms,
       dTermToGyroRatio: gyroRms > 0 ? round(dTermRms / gyroRms) : 0,
@@ -813,6 +998,10 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
       trackingCoherence: tracking.coherence,
       trackingPhaseDeg: tracking.phaseDeg,
       iTermWindupScore: iTerm && gyro && setpoint ? iTermWindupScore(iTerm, setpoint, gyro) : 0,
+      // PIDtoolbox-style authority check: error growth across stick deflection.
+      pidError: gyro && setpoint ? pidErrorByDeflection(setpoint, gyro) : { means: [], slopeRatio: 0, samples: 0 },
+      // BetaflightAssistant-style transfer-function recommendation.
+      transfer: transferSummary,
     };
     if (dSpectrum) axisMetrics.dTermSpectrum = dSpectrum;
     if (erpm.length && peaks.length && sampleRateHz) {
@@ -877,7 +1066,11 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
   /* ---- report-level faults ---- */
   const desync = detectDesync(log, polePairs);
   if (desync.events > 0) {
-    faults.push(fault('MOTOR_DESYNC', 'critical', `${desync.kind === 'erpm' ? 'eRPM' : 'motor'} evidence: ${desync.detail}`));
+    faults.push(fault('MOTOR_DESYNC', 'critical', `eRPM evidence: ${desync.detail}`));
+  } else if (desync.kind === 'unavailable') {
+    // Informational and NOT blocking: without eRPM there is nothing to judge,
+    // and treating that as a fault used to lock tuning on perfectly good logs.
+    faults.push(fault('DESYNC_NOT_ASSESSABLE', 'info', desync.detail));
   }
 
   if (saturationPct > 20) {
@@ -969,7 +1162,10 @@ export function computeMetrics(decodedLog, { currentPid = null, currentFilter = 
     blocksTuning,
     warnings,
     sampleQuality,
+    // The log describes the craft that produced it: PID, filter, loop rate.
+    // Offline analysis has no FC to ask, so the advice reads these instead.
+    craftSettings: readCraftSettings(log.header || {}),
   };
 }
 
-export default { computeMetrics, detectDescentSegments, estimateStepResponse, trackingMetrics, iTermWindupScore, computeSampleQuality };
+export default { computeMetrics, detectDescentSegments, estimateStepResponse, trackingMetrics, iTermWindupScore, computeSampleQuality, pidErrorByDeflection };

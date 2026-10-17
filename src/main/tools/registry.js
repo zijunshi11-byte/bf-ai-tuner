@@ -19,6 +19,7 @@ import { CH, TOOL_SCHEMAS } from '../../shared/contracts.js';
 export function createHandlers(session, ctx = {}) {
   const {
     pickFile = async () => null,
+    saveFile = async () => null,
     appInfo = () => ({}),
     openPrivacySettings = async () => ({ opened: false }),
     onLog = () => {},
@@ -148,6 +149,35 @@ export function createHandlers(session, ctx = {}) {
       session.proposeTune({ metrics, currentPid, currentFilter }),
 
     [CH.TUNE_APPLY]: async (args = {}) => session.applyTune(args),
+
+    /* ---------------- AI agent (optional, read-only) ---------------- */
+
+    /**
+     * All three AI handlers are read-only with respect to the flight
+     * controller: they read settings, and they POST a measurement summary to a
+     * model the operator configured. Applying anything the model suggests still
+     * goes through TUNE_APPLY and its two-phase token.
+     */
+    [CH.AI_GET_CONFIG]: async () => session.getAiConfig(),
+
+    [CH.AI_SET_CONFIG]: async (patch = {}) => session.setAiConfig(patch),
+
+    [CH.AI_ANALYZE]: async ({ metrics = null, file = null, level = 'standard' } = {}) =>
+      session.aiAnalyze({ metrics, file, level }),
+
+    /**
+     * Write the pack + prompt to a text file, so the operator can hand the
+     * complete log summary to any assistant that accepts an attachment without
+     * configuring an endpoint in this app.
+     */
+    [CH.AI_EXPORT_PACK]: async ({ metrics = null, level = 'full' } = {}) => {
+      const filePath = await saveFile({
+        defaultPath: `bf-ai-pack-${level}.txt`,
+        filters: [{ name: 'Text', extensions: ['txt', 'md'] }],
+      });
+      if (!filePath) return { canceled: true };
+      return session.exportAiPack({ metrics, level, filePath });
+    },
 
     /* ---------------- safety ---------------- */
 

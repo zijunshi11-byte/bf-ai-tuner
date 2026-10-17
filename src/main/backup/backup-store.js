@@ -40,7 +40,8 @@ export const BACKUP_PARAMS = [
   // gyro / D-term filtering
   'gyro_lpf1_static_hz', 'gyro_lpf2_static_hz',
   'dterm_lpf1_static_hz', 'dterm_lpf2_static_hz',
-  'gyro_notch_hz', 'gyro_notch_cutoff',
+  'gyro_notch1_hz', 'gyro_notch1_cutoff',
+  'gyro_notch2_hz', 'gyro_notch2_cutoff',
   'dyn_notch_count', 'dyn_notch_q', 'dyn_notch_min_hz', 'dyn_notch_max_hz',
   // RPM filter + the bidirectional link it depends on
   'rpm_filter_harmonics', 'rpm_filter_q', 'rpm_filter_min_hz',

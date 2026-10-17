@@ -917,6 +917,23 @@ function makeMetrics(overrides = {}) {
 const PID = { roll: { P: 45, I: 80, D: 34 }, pitch: { P: 47, I: 85, D: 36 }, yaw: { P: 45, I: 80, D: 0 } };
 const FILTER = { gyroLpf1Hz: 250, dtermLpf1Hz: 120, rpmFilterHarmonics: 3, rpmFilterQ: 500, rpmFilterMinHz: 100 };
 
+/**
+ * A log whose motors sat near full output while D carried more energy than the
+ * gyro: the high-throttle heat signature the TPA rule keys on.
+ */
+function highThrottleHeatMetrics(overrides = {}) {
+  const base = makeMetrics();
+  return makeMetrics({
+    motorSaturationPct: 34.5,
+    axes: {
+      roll: { ...base.axes.roll, dTermToGyroRatio: 0.52 },
+      pitch: { ...base.axes.pitch, dTermToGyroRatio: 0.44 },
+      yaw: base.axes.yaw,
+    },
+    ...overrides,
+  });
+}
+
 describe('proposal engine', () => {
   test('a blocking fault produces only hardware advice', () => {
     const metrics = makeMetrics({
@@ -1023,6 +1040,34 @@ describe('proposal engine', () => {
     const noData = proposeTune({ metrics, currentPid: PID, currentFilter: filter });
     const c = noData.find((p) => p.category === 'pid');
     assert.ok(c.cli.some((x) => /^set d_roll = \d+$/.test(x)), `unexpected: ${c.cli.join(', ')}`);
+  });
+
+  test('offline d_min null (header has no d_min) is NOT treated as 0/disabled', () => {
+    const noisy = (extra = {}) => ({
+      propwashIndex: 0.8, propwashEvents: 9, dTermToGyroRatio: 0.2, gyroRms: 50,
+      step: { overshootPct: 5, settlingTimeMs: 50, samples: 20 }, peaks: [], ...extra,
+    });
+    const metrics = makeMetrics({
+      sampleQuality: 0.9,
+      motorSaturationPct: 0,
+      axes: { roll: noisy(), pitch: noisy(), yaw: noisy() },
+    });
+    const filter = { ...FILTER, gyroLpf1Hz: 250, dtermLpf1Hz: 120, rpmFilterHarmonics: 3 };
+
+    // The Blackbox header does not carry the `d_min_*` parameters, so offline
+    // analysis reads them as null. `Number(null)` is 0, which the old code
+    // mistook for "disabled" and proposed `d_min_pitch: 0 -> 14` on a craft
+    // that actually had `d_min_pitch = 17` (btfl_all.bbl regression). An
+    // unknown floor must fall back to the static-D path instead.
+    const offline = proposeTune({
+      metrics, currentPid: PID, currentFilter: filter,
+      dynamics: { dMin: { roll: null, pitch: null, yaw: null } },
+    });
+    const p = offline.find((x) => x.category === 'pid');
+    assert.ok(p, 'propwash proposal expected');
+    assert.ok(p.cli.some((x) => /^set d_roll = \d+$/.test(x)), `expected static-D fallback, got: ${p.cli.join(', ')}`);
+    assert.equal(p.cli.some((x) => /^set d_min_/.test(x)), false, 'must not invent a d_min change from an unknown floor');
+    assert.equal(JSON.stringify(p.diff).includes('d_min_'), false, 'diff must target d_*, not d_min_*');
   });
 
   test('filter advice is produced with RPM filtering OFF (it is never required)', () => {
@@ -1160,6 +1205,167 @@ describe('proposal engine', () => {
     assert.ok(Array.isArray(p.cli));
     assert.ok(p.confidence > 0 && p.confidence <= 1);
   });
+
+  test('high-throttle D-term heat raises TPA attenuation by one conservative step', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 65, tpaBreakpoint: 1400 },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p, 'expected a TPA proposal');
+    assert.equal(p.category, 'filter');
+    assert.equal(p.safeToApply, true);
+
+    const rate = p.diff.find((d) => d.param === 'tpa_rate');
+    const bp = p.diff.find((d) => d.param === 'tpa_breakpoint');
+    assert.ok(rate && bp, `expected both TPA params, got ${p.diff.map((d) => d.param).join(', ')}`);
+    // More attenuation = higher tpa_rate, lower tpa_breakpoint (BF 4.3+ mode D).
+    assert.ok(rate.to > 65 && rate.to <= 75, `tpa_rate ${rate.to} must step toward the 70-75 reference`);
+    assert.ok(rate.to - 65 <= Math.round(65 * 0.1), 'tpa_rate step must stay within 10%');
+    assert.equal(bp.to, 1350, 'tpa_breakpoint steps down 50 units, into the 1300-1350 band');
+    assert.ok(p.cli.includes(`set tpa_rate = ${rate.to}`));
+    assert.ok(p.cli.includes('set tpa_breakpoint = 1350'));
+
+    // Six-part report: the numbers that fired, plus why / if-not-applied.
+    assert.match(p.evidence, /34\.5/);
+    assert.match(p.evidence, /0\.52/);
+    assert.match(p.evidence, /70–75/);
+    assert.ok(p.why && p.ifNotApplied);
+
+    // Screened like every other diff: whitelisted, nothing forbidden.
+    const { allowed, blocked } = filterDiff(p.diff);
+    assert.equal(blocked.length, 0);
+    assert.equal(allowed.length, 2);
+  });
+
+  test('TPA that is switched off is enabled at the reference floor, not nudged to 1', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 0, tpaBreakpoint: 1350 },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p);
+    const rate = p.diff.find((d) => d.param === 'tpa_rate');
+    assert.equal(rate.from, 0);
+    assert.equal(rate.to, 70, 'a disabled TPA must be enabled at the reference floor');
+    // The breakpoint already sits in the reference band: nothing to move.
+    assert.equal(p.diff.find((d) => d.param === 'tpa_breakpoint'), undefined);
+  });
+
+  test('the TPA rule stays silent without high-throttle motor load', () => {
+    const base = makeMetrics();
+    const metrics = makeMetrics({
+      motorSaturationPct: 2,
+      axes: {
+        roll: { ...base.axes.roll, dTermToGyroRatio: 0.52 },
+        pitch: { ...base.axes.pitch, dTermToGyroRatio: 0.44 },
+        yaw: base.axes.yaw,
+      },
+    });
+    const proposals = proposeTune({
+      metrics,
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 65, tpaBreakpoint: 1400 },
+    });
+    assert.equal(proposals.find((x) => x.id === 'tpa-high-throttle-d'), undefined);
+  });
+
+  test('an unknown tpa_rate is reported with the reference but never becomes a writable diff', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      // No tpa read-back: the engine must not guess the base value.
+      dynamics: { dMin: { roll: 30, pitch: 30, yaw: 0 } },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p, 'the finding is still reported');
+    assert.equal(p.safeToApply, false);
+    assert.deepEqual(p.diff, []);
+    assert.deepEqual(p.cli, []);
+    assert.ok(p.blockedBy.length > 0);
+    assert.match(p.evidence, /34\.5/);
+    assert.match(p.evidence, /1300–1350/);
+  });
+
+  test('TPA already inside the reference band is reported, not moved', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 72, tpaBreakpoint: 1320 },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p);
+    assert.equal(p.safeToApply, false);
+    assert.deepEqual(p.diff, []);
+    assert.match(p.evidence, /当前 tpa_rate = 72/);
+    assert.match(p.evidence, /tpa_breakpoint = 1320/);
+  });
+
+  test('tpa_mode = PD is reported honestly instead of being called D-only attenuation', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 65, tpaBreakpoint: 1400, tpaMode: 'PD' },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p);
+    // The measurement is the same and the lever still applies, but the evidence
+    // must not assert behaviour the firmware will not perform.
+    assert.equal(p.safeToApply, true);
+    assert.match(p.evidence, /tpa_mode = PD/);
+    assert.match(p.evidence, /同时缩放 P 与 D/);
+    assert.doesNotMatch(p.evidence, /只(在 breakpoint 以上按 .* 缩放 D 项|缩放 D 项)/);
+    assert.match(p.why, /P 项会跟着一起变软/);
+    assert.match(p.verification, /set tpa_mode = D/);
+    assert.ok(p.diff.some((d) => d.param === 'tpa_rate'));
+  });
+
+  test('tpa_mode = D keeps the D-only rationale without the P-side caution', () => {
+    const proposals = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: FILTER,
+      dynamics: { tpaRate: 65, tpaBreakpoint: 1400, tpaMode: 'D' },
+    });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p);
+    assert.match(p.evidence, /tpa_mode = D/);
+    assert.match(p.evidence, /只.*缩放 D 项/);
+    assert.doesNotMatch(p.why, /P 项会跟着一起变软/);
+    assert.doesNotMatch(p.verification, /set tpa_mode = D/);
+  });
+
+  test('an actionable TPA step owns the D-term heat symptom instead of competing with it', () => {
+    const filter = { ...FILTER, dtermLpf1Hz: 120 };
+
+    const owned = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: filter,
+      dynamics: { tpaRate: 65, tpaBreakpoint: 1400 },
+    });
+    assert.equal(owned.find((x) => x.id === 'tpa-high-throttle-d')?.safeToApply, true);
+    assert.equal(owned.find((x) => x.id === 'filter-dterm-lpf1'), undefined, 'one symptom, one diff');
+
+    // Without a read-back the TPA finding is advisory only, so the existing
+    // D-term low-pass advice must keep its voice.
+    const noReadback = proposeTune({
+      metrics: highThrottleHeatMetrics(),
+      currentPid: PID,
+      currentFilter: filter,
+      dynamics: null,
+    });
+    assert.equal(noReadback.find((x) => x.id === 'tpa-high-throttle-d')?.safeToApply, false);
+    assert.ok(noReadback.find((x) => x.id === 'filter-dterm-lpf1'));
+  });
 });
 
 describe('diff screening', () => {
@@ -1174,10 +1380,10 @@ describe('diff screening', () => {
   });
 
   test('the tunable whitelist accepts real parameters and rejects others', () => {
-    for (const ok of ['p_roll', 'd_yaw', 'f_pitch', 'd_max_roll', 'gyro_lpf1_static_hz', 'dterm_lpf2_static_hz', 'dyn_notch_q', 'rpm_filter_harmonics', 'blackbox_sample_rate']) {
+    for (const ok of ['p_roll', 'd_yaw', 'f_pitch', 'd_max_roll', 'gyro_lpf1_static_hz', 'dterm_lpf2_static_hz', 'dyn_notch_q', 'rpm_filter_harmonics', 'blackbox_sample_rate', 'gyro_notch1_hz', 'gyro_notch1_cutoff', 'dterm_notch_hz']) {
       assert.equal(isTunableParam(ok), true, `${ok} should be tunable`);
     }
-    for (const bad of ['failsafe_throttle', 'motor_pwm_protocol', 'reboot', 'serialrx_provider', 'gtune_0']) {
+    for (const bad of ['failsafe_throttle', 'motor_pwm_protocol', 'reboot', 'serialrx_provider', 'gtune_0', 'gyro_notch_hz', 'gyro_notch_cutoff']) {
       assert.equal(isTunableParam(bad), false, `${bad} should not be tunable`);
     }
   });

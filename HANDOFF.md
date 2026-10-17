@@ -8,8 +8,8 @@ Handoff notes for whoever picks this up next (Codex or a human). Companion to
 [AGENTS.md](AGENTS.md), which lists the environment and protocol traps — read
 that first; it is not repeated here.
 
-**Status: builds, packages, and runs. 168/168 tests pass. Ready for continued
-development, with two open decisions listed in §6.**
+**Status: builds, packages, and runs. 246/246 tests pass. Ready for continued
+development, with the open items listed in §6.**
 
 ---
 
@@ -36,7 +36,7 @@ Run all three, in order, from `bf-ai-tuner/`:
 
 ```bash
 npm run lint:syntax      # every source file parses
-npm test                 # 168 tests / 21 suites / 168 pass / 0 fail
+npm test                 # 246 tests / 24 suites / 246 pass / 0 fail
 bash scripts/build-mac.sh # out-of-tree build + ad-hoc sign + dist/*.dmg
 ```
 
@@ -45,7 +45,7 @@ Everything below was verified at the time of handoff:
 | Check | Result |
 |---|---|
 | `npm run lint:syntax` | every checked file parsed cleanly |
-| `npm test` | **168 / 168 pass**, 0 fail |
+| `npm test` | **246 / 246 pass**, 0 fail |
 | `bash scripts/build-mac.sh` | exit 0, `codesign --verify --deep --strict` → VALID |
 | Packaged app launch | OK; UI driven over CDP (port 9222) |
 | Signature | `Identifier=com.bf.aituner`, `Signature=adhoc`, `TeamIdentifier=not set` |
@@ -93,10 +93,13 @@ Note: launching from a shell that has `ELECTRON_RUN_AS_NODE=1` exported requires
 | Re-fly evaluation + auto-rollback | Working. Compares against the pre-change baseline; reverts automatically only on a hard regression past tolerance. |
 | Blackbox | SPIFLASH via MSP (2k back-calculation, field selection, erase, download). SD cards only via MSC. |
 | MSC (large logs) | Working. `msc` CLI → FC reboots → volume mounts → list/import → eject + power cycle. All MSP writes refused while in MSC. |
-| Bidirectional DShot / RPM | Working, verified against real hardware (see §5). |
-| Analysis — PID | Working: propwash, overshoot, sluggish, I-term; step response, tracking, saturation. |
-| Analysis — filter | Working: measured attenuation across the 200 Hz+ noise band, residual peaks, D-term LPF, over-filtering, plus an explicit "filters are fine" verdict when nothing needs changing. |
-| UI | 7-page nav, 11-slot status bar, six-part conclusion cards, diff-confirm dialogs, one-click rollback. |
+| Bidirectional DShot / RPM | Working, verified against real hardware (see §5). Motor-desync detection is command-aware: a single motor is a desync only when it is still commanded to spin (above half its command range) while its eRPM reads near zero (absolute < 2k eRPM floor, not "10% of the fastest"); **two or more motors at zero eRPM together while flying is flagged as a crash signature regardless of command** (btfl_003.bbl regression). This stops healthy hard-roll logs (inner motors idling at ~8–20k eRPM beside a 200k eRPM neighbour, or bidir-DShot telemetry dropping to 0 during braking/reversal) from latching the session read-only, while still catching a real two-corner desync crash. |
+| Analysis — PID | Working: propwash, overshoot, sluggish (with PIDtoolbox-style PID-error × stick-deflection slope as the authority check), I-term, feedforward (setpoint→gyro phase lag / step latency → `f_*`, stands down on overshoot-owned axes), and transfer-function recommendation (BetaflightAssistant-style bandwidth/phase-margin/low-freq-error → P/I/D/FF scales, gated by mean coherence ≥ 0.5); step response, tracking, saturation. PID proposals carry an advisory BF slider-mode equivalent (`sliderHint`, upstream non-expert bounds 0.70–1.40). Note: the Blackbox header carries `d_max_*` but NOT `d_min_*`, so offline analysis reads d_min as `null` — the propwash rule treats `null` as "unknown" (falls back to static D) and only treats a real `0` as "disabled"; `Number(null) === 0` made this easy to get wrong. |
+| Analysis — filter | Working: measured attenuation across the 200 Hz+ noise band, residual peaks, D-term LPF, over-filtering, RPM-filter health (harmonics / min_hz / Q from RPM-matched residual peaks), evidence-driven iterm_relax (throttle-chop hunt), plus an explicit "filters are fine" verdict when nothing needs changing. **Every filter step is bounded by `STEP_LIMITS.FILTER_PCT` (≤ 10 %) via `filterOpenStep`/`filterTightenStep`** — the earlier ad-hoc multipliers (`dtermLpf1 * 1.6`, `lpf1 * 0.8/1.3`, `dtermLpf1 * 0.85`, `worst.hz * 0.85`) broke the "filters ≤ 10 %" invariant and the D-term-over-filtering rule jumped `dterm_lpf1_static_hz` 82 → 120 Hz (+46 %), which let enough D-term noise through to desync/crash a quad on the next flight (btfl_003.bbl). One 10 % step per round only. **Notch parameter naming trap:** the Blackbox *header* field is `gyro_notch_hz = "hz1,hz2"` (a pair), but the Betaflight *CLI* parameters are `gyro_notch1_hz`/`gyro_notch1_cutoff` (and `gyro_notch2_*`); emitting `set gyro_notch_hz = …` is rejected by the FC with "INVALID NAME". Header parsing stays on the header name, but every `set`/`get`/whitelist entry must use `gyro_notch1_*` (the D-term notch `dterm_notch_hz`/`dterm_notch_cutoff` is a single notch and is already correct). |
+| Analysis — TPA | Working: high-throttle D-term heat (motor saturation + D/gyro ratio) proposes one conservative TPA step from the live `tpa_rate` / `tpa_breakpoint` / `tpa_mode` read-back; advisory-only when the read-back is missing, and it stands the D-term-LPF rule down when it owns the symptom. |
+| Analysis — AI agent (optional) | Working: `src/main/analysis/ai-agent.js` serialises the log into a **budget-bounded analysis pack** and sends it to a user-configured OpenAI-compatible `/chat/completions` endpoint, then renders the model's six-part review beside the rule proposals. Three detail levels (`PACK_LEVELS`): **compact** ≤ 9 KB (derived numbers only), **standard** ≤ 120 KB (full blackbox header + every channel statistic + every detected peak + decimated spectra + 12-segment summary + the 15 core channels as time-series envelopes), **full** ≤ 400 KB (all 34 channels, higher resolution). Measured on a real 78.5 s / 157 k-frame log: compact 2 KB, standard 105 KB @ 5.2 Hz, full 316 KB @ 8.6 Hz — every channel present for the entire flight. Each envelope bucket carries `[min, mean, max]` so spikes survive decimation, plus `everySamples` for time alignment; `trimPackToBudget` verifies the serialised size, because blowing the context window is a hard failure. **导出分析包** (`ai:export_pack`) writes pack + prompt to a .txt so any assistant can receive it without this app holding a key. Settings live in `userData/ai-config.json` (mode 0600) and the key is write-only — the renderer only ever learns `hasApiKey`. **Two screens gate every model-proposed diff**: `filterDiff` (names: `FORBIDDEN_PARAMS` + the `isTunableParam` whitelist) and `enforceStepLimits` (magnitudes: the same P/I ≤ 7 %, D ±3, filter ≤ 10 % budget the rules obey, clamped + flagged). AI diffs are never `safeToApply`; the CLI shown is re-derived from the screened diff so a hallucinated or out-of-budget line can never reach the copy button. Requires an API key; the offline rule engine is unaffected and remains the default. |
+| Tuning write path | Two-phase dry-run + token, screened diff, then `set` + `save` in one audited batch. **The `save` was missing until this branch** — a tuning write reached RAM only and the UI still reported success, so the change was lost at the next reboot. |
+| UI | **3-page nav** (连接 / 分析调参 / 历史报告), 11-slot status bar, six-part conclusion cards, diff-confirm dialogs, one-click rollback. The flow was collapsed from 7 → 3 pages: connecting now **auto-runs the whole read-only pre-flight chain** (`identify → getSettings+backup → bidir probe → bb.readConfig`) the moment the link is up, and the connect page carries the resulting status cards (identity / bidir / blackbox / 2 kHz write / rollback). The redundant per-card buttons (识别飞控 / 读取设置并备份 / 一键准备 / 探测能力) were removed; only a 「重新准备」 re-run and an explicit 「仅重新备份 dump」 remain. The log download lives on the analysis page and offers **下载并分析** (download + metrics in one click). No safety gate changed: the 2 kHz write, the mandatory backup, and the two-phase token flow are all still separate, explicitly confirmed actions. |
 | Report format | Implemented as specified (six parts, colour-coded verdicts). |
 
 ---
@@ -140,17 +143,17 @@ and the tests. **Pick one; they cannot both hold.** Note that
 
 ### 6.2 Not implemented
 
-1. **No standalone TPA rule.** `tpa_rate` / `tpa_breakpoint` / `tpa_mode` are
-   read and are on the tunable whitelist, but nothing proposes them.
-2. **No standalone `iterm_relax` rule.** The 25–35 Hz reference exists as
-   `RACING_REFERENCE.itermRelaxCutoffHz` and the params are tunable, but
-   throttle-chop hunt still routes through the existing I/D rules.
-3. **MSC is a manual choice.** There is no automatic size-based routing between
+1. **MSC is a manual choice.** There is no automatic size-based routing between
    MSP download and MSC mounting.
-4. **SD-card logs cannot be erased or downloaded over MSP** — MSC only. This is
+2. **SD-card logs cannot be erased or downloaded over MSP** — MSC only. This is
    a firmware limitation, and the UI says so.
-5. No notarization or Developer ID; ad-hoc signing only, so every distribution
+3. No notarization or Developer ID; ad-hoc signing only, so every distribution
    needs the quarantine step in §3.
+
+The standalone TPA rule, the standalone evidence-driven `iterm_relax` rule
+(previously items here), the feedforward (F) rule and the RPM-filter health
+rule are implemented on this branch — see `ruleFeedforward`,
+`ruleItermRelaxEvidence` and `ruleRpmHealth` in `ai-tune.js`.
 
 ---
 
@@ -161,6 +164,6 @@ and the tests. **Pick one; they cannot both hold.** Note that
 - Adding an IPC channel is a three-file change in a fixed order: `CH` in
   `src/shared/contracts.js` → mirror in `src/main/preload.cjs` → handler in
   `src/main/tools/registry.js`. A contract-drift test fails the suite otherwise.
-- Keep `npm test` at 168/168; add a regression test with every fix.
+- Keep `npm test` green (currently 246/246); add a regression test with every fix.
 - The renderer has no in-repo test harness. Verify it by driving the packaged
   app over the DevTools Protocol, or with a throwaway DOM stub.

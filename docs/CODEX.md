@@ -141,7 +141,7 @@ network_access = true
 | 步骤 | 沙箱内结果 |
 |---|---|
 | `npm run lint:syntax` | ✅ 通过 |
-| `npm test` | ✅ 168/168 通过 |
+| `npm test` | ✅ 179/179 通过 |
 | `electron-builder` 打包出 `.app` | ✅ 成功（写入 `$TMPDIR` 无问题） |
 | `codesign` ad-hoc 签名 | ❌ 失败 → 产出**未签名**、在 Apple Silicon 上无法启动的包 |
 | `hdiutil create`（生成 dmg） | ❌ `hdiutil: create failed - 设备未配置` |
@@ -206,7 +206,7 @@ codex exec -c 'sandbox_workspace_write.network_access=true' "..."
    ```bash
    npm run lint:syntax && npm test && bash scripts/build-mac.sh
    ```
-   基线：**168/168 通过**，构建 exit 0 且签名校验 VALID。
+   基线：**179/179 通过**，构建 exit 0 且签名校验 VALID。
 5. **通过才合并。** 合并后删分支；不通过就把失败输出原样贴回去让它修，别自己绕过。
 
 补充红线（与 AGENTS.md §4 一致，Codex 也读得到）：

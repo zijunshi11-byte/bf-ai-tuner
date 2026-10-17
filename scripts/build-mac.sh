@@ -78,6 +78,33 @@ case "$PROJECT_ROOT" in
     ;;
 esac
 
+step "Releasing any stale installer volume"
+# electron-builder mounts the dmg it just built under /Volumes to apply the
+# window layout, then detaches it by volume name. If a volume with that same
+# name is already mounted - typically because the operator is running the app
+# straight out of the previous .dmg - its detach lands on the wrong volume and
+# the build dies after six retries with a bare
+# "hdiutil: couldn't unmount ... resource busy". Clear the name first, and when
+# it is genuinely in use, say who is using it instead of retrying blindly.
+DMG_TITLE="$(
+  node -p 'const p=require("./package.json");const d=(p.build&&p.build.dmg)||{};String(d.title||p.productName+" ${version}").replace("${version}",p.version)'
+)"
+DMG_VOLUME="/Volumes/$DMG_TITLE"
+if mount | grep -Fq "on ${DMG_VOLUME} "; then
+  say "found a mounted installer volume: $DMG_VOLUME"
+  if DETACH_OUT="$(hdiutil detach "$DMG_VOLUME" 2>&1)"; then
+    say "detached it - electron-builder needs the volume name free"
+  else
+    say "hdiutil said: ${DETACH_OUT:-<no output>}"
+    say "whoever holds it open must stop first - usually BF-AITuner itself,"
+    say "launched straight out of the .dmg. Check with:"
+    say "  lsof +c 0 \"$DMG_VOLUME\""
+    die "installer volume $DMG_VOLUME is still mounted"
+  fi
+else
+  say "none mounted"
+fi
+
 step "Cleaning previous output"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"

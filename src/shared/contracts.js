@@ -64,6 +64,12 @@ export const CH = {
   TUNE_PROPOSE: 'tune:propose',
   TUNE_APPLY: 'tune:apply',
 
+  // --- AI agent analysis (optional; needs a user-supplied OpenAI-compatible endpoint) ---
+  AI_GET_CONFIG: 'ai:get_config',
+  AI_SET_CONFIG: 'ai:set_config',
+  AI_ANALYZE: 'ai:analyze',
+  AI_EXPORT_PACK: 'ai:export_pack',
+
   // --- safety ---
   SAFETY_STATUS: 'safety:status',
   SAFETY_ACK: 'safety:ack',

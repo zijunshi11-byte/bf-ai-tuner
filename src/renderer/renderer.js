@@ -243,6 +243,8 @@ const CATEGORY_TONE = { pid: 'info', filter: 'info', hardware: 'warn', none: 'id
  * ================================================================== */
 
 const state = {
+  /** 'auto' | 'light' | 'dark' - see applyTheme(). */
+  theme: 'auto',
   contract: LOCAL_CONTRACT,
   contractSource: 'local mirror',
   step: 0,
@@ -282,8 +284,7 @@ const state = {
     latencyMs: null,
     lastOutcome: '',
     timerId: null,
-  },
-  /** Advanced manual CLI box (dry-run by default; real writes are gated + confirmed). */
+  },  /** Advanced manual CLI box (dry-run by default; real writes are gated + confirmed). */
   cli: { text: '', result: null },
   /** Inline confirm state for the force-trust override. */
   trust: { confirm: false, error: '' },
@@ -351,6 +352,18 @@ const state = {
   evaluate: { busy: false, result: null, error: '' },
   /** True while an offline analysis pass is in flight (drives the state bar). */
   analysis: { busy: false },
+  /**
+   * 「一键准备」chain: runs every read-only pre-flight check in order so the
+   * operator does not have to walk three separate pages to reach the same
+   * state. Each entry is { label, state: 'ok'|'fail'|'skip', detail }.
+   */
+  prepare: { busy: false, current: null, results: [] },
+  /**
+   * Optional AI agent layer. `config` never holds the API key - the main
+   * process only reports whether one is stored (`hasApiKey`). `level` picks how
+   * much of the log is serialised into the pack (compact / standard / full).
+   */
+  ai: { config: null, loading: false, busy: false, result: null, error: null, showSettings: false, level: 'standard', exportResult: null },
   capture: {
     running: false,
     startedAt: 0,
@@ -1696,10 +1709,6 @@ function subscribeEvents() {
 
 const STEPS = [
   { id: 'connect', render: renderConnect, canEnter: () => true },
-  { id: 'identify', render: renderIdentify, canEnter: () => state.connected },
-  { id: 'bidir', render: renderBidir, canEnter: () => state.connected },
-  { id: 'blackbox', render: renderBlackbox, canEnter: () => state.connected },
-  { id: 'capture', render: renderCapture, canEnter: () => state.connected },
   { id: 'analysis', render: renderAnalysis, canEnter: () => true },
   { id: 'history', render: renderHistory, canEnter: () => true },
 ];
@@ -1722,7 +1731,7 @@ function showStep(index) {
     if (panel) panel.hidden = i !== index;
   }
   // The history page loads its list on entry (once per entry, coalesced).
-  if (index === 6) loadHistoryList();
+  if (index === 2) loadHistoryList();
   renderStep(index);
   const title = $(`#step-title-${index}`);
   if (title) title.focus({ preventScroll: true });
@@ -1934,9 +1943,13 @@ function renderConnect(body) {
     state.connected = true;
     state.port = port;
     state.done.add(0);
-    appendLog(infoEntry(`已连接 ${port}`, 'state'));
+    appendLog(infoEntry(`已连接 ${port}，自动执行飞控准备…`, 'state'));
     await refreshSafety();
     renderStep(state.step);
+    // Auto-run the read-only pre-flight chain (identify → settings+backup →
+    // bidir probe → blackbox read) the moment the link is up. This replaces the
+    // old "walk three pages and press six buttons" flow with "plug in and wait".
+    runPrepareAll();
   });
 
   const disconnectBtn = button('断开 / Disconnect', { variant: 'ghost', enabled: () => state.connected });
@@ -1988,14 +2001,27 @@ function renderConnect(body) {
         ]),
         el('p', {
           class: 'hint',
-          text: '本步骤只读：不会写入任何参数。连接后请继续第 2 步读取指纹并生成完整备份。',
+          text: '本步骤只读：不会写入任何参数。连接成功后会自动识别飞控、读取设置并备份、检测双向 DShot、读取黑匣子配置。',
         }),
       ],
       { badges: [badge('只读 / read-only', 'ok'), badge('115200', 'info')] },
     ),
-    autoDebugCard(),
-    card('主机环境 / Host', [el('div', { class: 'kv-grid', id: 'host-info' }, [el('p', { class: 'hint', text: '读取中…' })])]),
   );
+
+  // Once linked, the connect page carries the whole pre-flight status: the
+  // auto-run summary plus the read-only detail cards (identity / bidir /
+  // blackbox / 2 kHz write / rollback).
+  if (state.connected) {
+    // One-shot MSC status probe on link (read-only, works in SAFE MODE).
+    if (!state.msc.tried) {
+      state.msc.tried = true;
+      refreshMscStatus({ silent: true });
+    }
+    body.append(autoPrepareCard());
+    renderPrepareCards(body);
+  }
+
+  body.append(autoDebugCard(), card('主机环境 / Host', [el('div', { class: 'kv-grid', id: 'host-info' }, [el('p', { class: 'hint', text: '读取中…' })])]));
   loadHostInfo();
 }
 
@@ -2048,25 +2074,218 @@ async function loadHostInfo() {
 }
 
 /* ================================================================== *
- * 14. Page 1 — identify (identity + backup + capabilities)
+ * 14. Page 1 — prepare (identify + backup + bidir + blackbox)
  * ================================================================== */
+
+/**
+ * Reusable pre-flight steps.
+ *
+ * Each returns `{ ok, detail }` and applies the same state updates whichever
+ * entry point calls it, so the one-click chain and the individual buttons can
+ * never drift apart.
+ */
+
+async function doIdentify() {
+  const res = await run('识别飞控', () => window.bf.fc.identify());
+  if (!res.ok) return { ok: false, detail: '识别失败 / identify failed' };
+  state.identity = res.value && typeof res.value === 'object' ? res.value : null;
+  state.done.add(0);
+  const id = state.identity;
+  appendLog(infoEntry(`识别完成：${str(id?.boardName)} (${str(id?.variant)} ${str(id?.version)})`, 'state'));
+  return { ok: true, detail: `${str(id?.boardName)} · ${str(id?.variant)} ${str(id?.version)}` };
+}
+
+async function doReadSettings() {
+  const res = await run('读取设置并备份', () => window.bf.fc.getSettings());
+  if (!res.ok) return { ok: false, detail: '读取/备份失败 / read failed' };
+  const value = res.value && typeof res.value === 'object' ? res.value : {};
+  state.settings = value;
+  if (value.identity) state.identity = value.identity;
+  if (value.capabilities) state.capabilities = value.capabilities;
+  state.pid = value.pid ?? null;
+  state.filter = value.filter ?? null;
+  state.done.add(0);
+  appendLog(infoEntry(`设置已读取，备份写入 ${str(value.backupPath)}`, 'state'));
+  await refreshSafety();
+  return { ok: true, detail: `备份 ${str(value.backupPath)}` };
+}
+
+async function doBidirProbe() {
+  const res = await run('双向DShot/RPM 检测', () => window.bf.fc.bidir());
+  if (!res.ok) return { ok: false, detail: '检测失败 / probe failed' };
+  state.bidir.probe = res.value && typeof res.value === 'object' ? res.value : null;
+  state.bidir.apply = null;
+  recordBidirProbe(state.bidir.probe);
+  state.done.add(0);
+  const probe = state.bidir.probe;
+  appendLog(infoEntry(`双向DShot 检测：${str(probe?.protocol)} · ${str(probe?.conclusion)}`, 'state'));
+  return { ok: true, detail: `${str(probe?.protocol)} · ${str(probe?.conclusion)}` };
+}
+
+async function doBbReadConfig() {
+  const res = await run('读取黑匣子配置', () => window.bf.bb.readConfig());
+  if (!res.ok) return { ok: false, detail: '读取失败 / read failed' };
+  state.bb.live = res.value && typeof res.value === 'object' ? res.value : null;
+  state.done.add(0);
+  return { ok: true, detail: describeBbConfig(state.bb.live) };
+}
+
+/**
+ * 「一键准备」— run every READ-ONLY pre-flight check in one go.
+ *
+ * This is the whole point of collapsing three pages into one: the operator
+ * plugs in the FC and presses one button instead of walking identify → bidir →
+ * blackbox and pressing six. Nothing here writes to the flight controller, so
+ * it runs in any safety mode; the 2 kHz logging write stays a separate,
+ * explicitly confirmed action.
+ */
+async function runPrepareAll() {
+  if (!state.connected || state.prepare.busy) return;
+  state.prepare.busy = true;
+  state.prepare.results = [];
+  const chain = [
+    { label: '识别飞控 / identify', fn: doIdentify },
+    { label: '读取设置 + 备份 / settings + backup', fn: doReadSettings },
+    { label: '双向DShot / bidir probe', fn: doBidirProbe },
+    { label: '黑匣子配置 / blackbox read', fn: doBbReadConfig },
+  ];
+  for (const step of chain) {
+    state.prepare.current = step.label;
+    showOpProgress(`自动准备 / ${step.label} …`, null);
+    renderStep(state.step);
+    let out;
+    try {
+      out = await step.fn();
+    } catch (err) {
+      out = { ok: false, detail: errMessage(err) };
+    }
+    state.prepare.results.push({ label: step.label, state: out?.ok ? 'ok' : 'fail', detail: str(out?.detail) });
+  }
+  showOpProgress(null);
+  state.prepare.current = null;
+  state.prepare.busy = false;
+  const failed = state.prepare.results.filter((r) => r.state === 'fail').length;
+  appendLog(
+    failed
+      ? warnEntry(`自动准备完成：${state.prepare.results.length - failed} 项成功、${failed} 项失败`)
+      : infoEntry(`自动准备完成：${state.prepare.results.length} 项全部成功`, 'state'),
+  );
+  renderStep(state.step);
+}
+
+/** Auto-run status: what the connect-triggered chain did, plus a re-run link. */
+function autoPrepareCard() {
+  const r = state.prepare;
+  const rerun = button(r.busy ? '准备中… / running' : '重新准备 / Re-run', {
+    variant: 'ghost',
+    enabled: () => state.connected && !r.busy,
+  });
+  action(rerun, '重新准备', runPrepareAll);
+
+  const parts = [
+    el('p', {
+      class: 'prose',
+      text: '连接后自动执行：识别 → 读取设置并备份 → 双向 DShot 检测 → 黑匣子配置读取。全部只读，任何模式下都可用；2k 采样率的写入仍需你单独确认。',
+    }),
+    el('div', { class: 'row' }, [
+      rerun,
+      r.busy && r.current ? chip(`进行中：${r.current}`, 'info') : null,
+      !r.busy && r.results.length ? chip(`${r.results.filter((x) => x.state === 'ok').length}/${r.results.length} 成功`, 'ok') : null,
+      !r.busy && !r.results.length && !state.connected ? chip('连接后自动运行 / runs on connect', 'idle') : null,
+    ]),
+  ];
+  if (r.results.length) {
+    parts.push(
+      el('ol', { class: 'checklist' }, r.results.map((x) =>
+        el('li', { class: x.state === 'ok' ? 'is-checked' : '' }, [
+          el('span', { text: `${x.state === 'ok' ? '✓' : '✗'} ${x.label}` }),
+          el('span', { class: 'man-hint', text: ` — ${x.detail}` }),
+        ]),
+      )),
+    );
+  }
+  return card('自动准备 / Auto prepare', parts, {
+    badges: [badge('只读 / read-only', 'ok')],
+  });
+}
+
+/** Read-only status cards shown on the connect page once the FC is linked. */
+function renderPrepareCards(body) {
+  // One-shot load of the stored backup list, so the rollback control can name
+  // its target before the operator presses it.
+  if (state.connected && !state.backup.loaded && !state.backup.loading) loadBackupList();
+
+  body.append(
+    identityCard(),
+    backupCard(),
+    fcBackupCard(),
+    capabilitiesCard(),
+    ...bidirCards(),
+    ...blackboxConfigCards(),
+  );
+}
+
+/** 双向 DShot/RPM result cards (probe runs automatically on connect). */
+function bidirCards() {
+  const probe = state.bidir.probe;
+  const verifyBtn = button(probe ? '重新检测 / Re-probe' : '检测 / Probe', {
+    variant: 'ghost',
+    enabled: () => state.connected,
+  });
+  action(verifyBtn, '双向DShot/RPM 检测', async () => {
+    state.bidir.busy = true;
+    renderStep(state.step);
+    await doBidirProbe();
+    state.bidir.busy = false;
+    renderStep(state.step);
+  });
+
+  const parts = [
+    card(
+      '双向DShot/RPM 检测 / Bidir DShot & RPM probe',
+      [
+        el('p', {
+          class: 'hint',
+          text: '只读探测：读取电机协议、dshot_bidir、motor_poles、rpm_filter_* 与每电机遥测（MSP + CLI dshot_telemetry_info）。建议修复只生成、绝不自动写入。',
+        }),
+        el('div', { class: 'row' }, [
+          verifyBtn,
+          state.bidir.busy ? chip('检测中 / probing…', 'info') : null,
+          probe ? chip(`上次检测 ${fmtClock(num(probe.checkedAt) ?? Date.now())}`, 'idle') : null,
+        ]),
+      ],
+      { badges: [badge('只读探测 / read-only', 'ok')] },
+    ),
+  ];
+
+  if (state.bidir.busy) {
+    parts.push(banner('info', '检测中 / probing…', [para('正在读取 MSP 遥测与 CLI 状态，可能需要几秒…')]));
+  }
+  if (probe) {
+    parts.push(bidirSummaryCard(probe), bidirTelemetryCard(probe), bidirApplyCard(probe));
+  } else {
+    parts.push(card('结果 / Result', [el('p', { class: 'hint', text: '点击「检测」读取双向DShot/RPM 状态：电机协议、遥测、电机极数与建议修复。' })]));
+  }
+  return parts;
+}
+
+/** Blackbox medium / 2 kHz config / erase / MSC cards (download moved to analyze). */
+function blackboxConfigCards() {
+  return [
+    blackboxMediaCard(),
+    ...blackboxConfigCard(),
+    blackboxLiveCard(),
+    mscCard(),
+    blackboxEraseCard(),
+    manualCliCard(),
+  ];
+}
 
 function identityCard() {
   const id = state.identity;
-  const actions = [];
-  const identifyBtn = button(id ? '重新识别 / Identify' : '识别飞控 / Identify', { variant: id ? 'ghost' : 'primary' });
-  action(identifyBtn, '识别飞控', async () => {
-    const res = await run('识别飞控', () => window.bf.fc.identify());
-    if (!res.ok) return;
-    state.identity = res.value && typeof res.value === 'object' ? res.value : null;
-    state.done.add(1);
-    appendLog(infoEntry(`识别完成：${str(state.identity?.boardName)} (${str(state.identity?.variant)} ${str(state.identity?.version)})`, 'state'));
-    renderStep(state.step);
-  });
-  actions.push(identifyBtn);
 
   if (!id) {
-    return card('识别 / Identify', [el('p', { class: 'hint', text: '尚未识别。点击「识别飞控」读取 MSP 指纹。' })], { actions });
+    return card('识别 / Identify', [el('p', { class: 'hint', text: '尚未识别。连接后会自动读取 MSP 指纹。' })]);
   }
 
   const confidence = clamp01(id.confidence);
@@ -2105,30 +2324,15 @@ function identityCard() {
     );
   }
   return card('识别 / Identify', parts, {
-    actions,
     badges: [badge(`置信度 ${fmtRatio(confidence)}`, confidenceTone(confidence)), badge(str(id.matchLevel), MATCH_LEVEL_TONE[id.matchLevel] || 'idle')],
   });
 }
 
 function backupCard() {
   const s = state.settings;
-  const readBtn = button(s ? '重新读取并备份 / Re-read' : '读取设置并备份 / Read & backup', { variant: s ? 'ghost' : 'primary' });
-  action(readBtn, '读取设置并备份', async () => {
-    const res = await run('读取设置并备份', () => window.bf.fc.getSettings());
-    if (!res.ok) return;
-    const value = res.value && typeof res.value === 'object' ? res.value : {};
-    state.settings = value;
-    if (value.identity) state.identity = value.identity;
-    if (value.capabilities) state.capabilities = value.capabilities;
-    state.pid = value.pid ?? null;
-    state.filter = value.filter ?? null;
-    state.done.add(1);
-    state.done.add(2);
-    appendLog(infoEntry(`设置已读取，备份写入 ${str(value.backupPath)}`, 'state'));
-    await refreshSafety();
-    renderStep(state.step);
-  });
 
+  // Settings are read + backed up automatically on connect; the only manual
+  // action left is an explicit re-backup of the dump without re-reading.
   const backupBtn = button('仅重新备份 dump / Backup', { variant: 'ghost' });
   action(backupBtn, '重新备份', async () => {
     const res = await run('重新备份 dump', () => window.bf.fc.backup());
@@ -2146,7 +2350,7 @@ function backupCard() {
         kv('dump 长度', `${fmtInt(String(s.dump ?? '').length)} 字符`),
         kv('diff all 长度', `${fmtInt(String(s.diffAll ?? '').length)} 字符`),
       ]
-    : [el('p', { class: 'hint', text: '尚未生成备份。读取设置会自动写入完整 dump 备份（安全边界要求）。' })];
+    : [el('p', { class: 'hint', text: '尚未生成备份。连接后读取设置会自动写入完整 dump 备份（安全边界要求）。' })];
 
   return card(
     '备份 / Backup',
@@ -2158,7 +2362,7 @@ function backupCard() {
       }),
     ],
     {
-      actions: [readBtn, backupBtn],
+      actions: [backupBtn],
       badges: [s ? badge('已备份 / backed up', 'ok') : badge('未备份 / no backup', 'warn'), badge('只读 / read-only', 'ok')],
     },
   );
@@ -2506,19 +2710,9 @@ function capabilityRows(caps) {
 
 function capabilitiesCard() {
   const caps = state.capabilities;
-  const probeBtn = button(caps ? '重新探测 / Re-probe' : '探测能力 / Probe', { variant: caps ? 'ghost' : 'primary' });
-  action(probeBtn, '探测能力', async () => {
-    const res = await run('探测能力', () => window.bf.fc.capabilities());
-    if (!res.ok) return;
-    state.capabilities = res.value && typeof res.value === 'object' ? res.value : null;
-    state.bb.fieldsInit = false; // re-derive the field grid from the fresh mask
-    state.done.add(2);
-    appendLog(infoEntry('能力探测完成', 'state'));
-    renderStep(state.step);
-  });
 
   if (!caps) {
-    return card('能力探测 / Capabilities', [el('p', { class: 'hint', text: '尚未探测。点击「探测能力」读取循环频率、RPM 滤波、黑匣子介质与滤波配置。' })], { actions: [probeBtn] });
+    return card('能力 / Capabilities', [el('p', { class: 'hint', text: '尚未探测。连接后会自动读取循环频率、RPM 滤波、黑匣子介质与滤波配置。' })]);
   }
 
   const warnings = Array.isArray(caps.warnings) ? caps.warnings : [];
@@ -2532,19 +2726,12 @@ function capabilitiesCard() {
         ? el('div', {}, [el('span', { class: 'field-label', text: `警告 / warnings (${warnings.length})` }), el('div', { class: 'chips' }, warnings.map((w) => chip(str(w), 'warn')))])
         : el('p', { class: 'hint ok', text: '无警告 / no warnings' }),
     ],
-    { actions: [probeBtn], badges: [badge(`${fmtHzShort(loopRateHz(caps))} loop`, 'info')] },
+    { badges: [badge(`${fmtHzShort(loopRateHz(caps))} loop`, 'info')] },
   );
 }
 
-function renderIdentify(body) {
-  // One-shot load of the stored backup list, so the rollback control can name
-  // its target before the operator presses it.
-  if (state.connected && !state.backup.loaded && !state.backup.loading) loadBackupList();
-  body.append(identityCard(), backupCard(), fcBackupCard(), capabilitiesCard());
-}
-
 /* ================================================================== *
- * 15. Page 2 — bidirectional DShot & RPM
+ * 15. Bidirectional DShot & RPM (cards reused by the prepare page)
  * ================================================================== */
 
 function recordBidirProbe(probe) {
@@ -2893,63 +3080,8 @@ function bidirApplyCard(probe) {
   });
 }
 
-function renderBidir(body) {
-  const probe = state.bidir.probe;
-  const verifyBtn = button(probe ? '重新验证 / Re-verify' : '检测 / Verify', {
-    variant: probe ? 'ghost' : 'primary',
-    enabled: () => state.connected,
-  });
-  action(verifyBtn, '双向DShot/RPM 检测', async () => {
-    state.bidir.busy = true;
-    renderStep(state.step);
-    const res = await run('双向DShot/RPM 检测', () => window.bf.fc.bidir());
-    state.bidir.busy = false;
-    if (!res.ok) {
-      renderStep(state.step);
-      return;
-    }
-    state.bidir.probe = res.value && typeof res.value === 'object' ? res.value : null;
-    state.bidir.apply = null;
-    recordBidirProbe(state.bidir.probe);
-    state.done.add(2);
-    appendLog(infoEntry(`双向DShot 检测：${str(state.bidir.probe?.protocol)} · ${str(state.bidir.probe?.conclusion)}`, 'state'));
-    renderStep(state.step);
-  });
-
-  if (!state.connected) {
-    body.append(banner('info', '未连接 / Not connected', [para('双向DShot/RPM 检测需要飞控连接。请先回到第 1 步连接飞控。')]));
-  }
-
-  body.append(
-    card(
-      '双向DShot/RPM 检测 / Bidir DShot & RPM probe',
-      [
-        el('p', {
-          class: 'hint',
-          text: '只读探测：读取电机协议、dshot_bidir、motor_poles、rpm_filter_* 与每电机遥测（MSP + CLI dshot_telemetry_info）。建议修复只生成、绝不自动写入。',
-        }),
-        el('div', { class: 'row' }, [
-          verifyBtn,
-          state.bidir.busy ? chip('检测中 / probing…', 'info') : null,
-          probe ? chip(`上次检测 ${fmtClock(num(probe.checkedAt) ?? Date.now())}`, 'idle') : null,
-        ]),
-      ],
-      { badges: [badge('只读探测 / read-only', 'ok')] },
-    ),
-  );
-
-  if (state.bidir.busy) {
-    body.append(banner('info', '检测中 / probing…', [para('正在读取 MSP 遥测与 CLI 状态，可能需要几秒…')]));
-  }
-  if (probe) {
-    body.append(bidirSummaryCard(probe), bidirTelemetryCard(probe), bidirApplyCard(probe));
-  } else {
-    body.append(card('结果 / Result', [el('p', { class: 'hint', text: '点击「检测」读取双向DShot/RPM 状态：电机协议、遥测、电机极数与建议修复。' })]));
-  }
-}
-
 /* ================================================================== *
- * 16. Page 3 — blackbox 2k (config + download)
+ * 16. Blackbox 2k (cards reused by the prepare page; download lives in analyze)
  * ================================================================== */
 
 function ensureBbFields() {
@@ -2975,7 +3107,7 @@ function bidirOnHint() {
 function bbDivisorNote() {
   const rate = num(state.bb.rate) ?? REQUESTED_BB_RATE_DEFAULT;
   const loop = loopRateHz(state.capabilities);
-  if (!loop) return '未知循环频率：完成第 2 步能力探测后可计算分频。';
+  if (!loop) return '未知循环频率：完成第 2 步「一键准备」的能力探测后可计算分频。';
   if (rate <= 0) return '请输入有效采样率。';
   const divisor = loop / rate;
   if (divisor < 1) return `${fmtHzShort(loop)} loop 低于请求的 ${fmtInt(rate)} Hz，飞控无法达到该采样率。`;
@@ -3061,7 +3193,7 @@ async function submitBbConfig(mode) {
   state.bb.lastApplied = false;
   state.bb.lastPlan = out.ratePlan && typeof out.ratePlan === 'object' ? out.ratePlan : null;
   state.bb.lastWarnings = Array.isArray(out.warnings) ? out.warnings : [];
-  state.done.add(3);
+  state.done.add(0);
 
   if (mode === 'dry') {
     appendLog(infoEntry(`试运行完成：${diff.length} 项差异（未写入飞控）`, 'state'));
@@ -3394,7 +3526,7 @@ function manualCliCard() {
     const sent = commands();
     const bidirHits = sent.filter((c) => BIDIR_PARAM_RE.test(c));
     if (bidirHits.length) {
-      throw new Error(`dshot_bidir / motor_poles / rpm_filter_* 只能通过第 3 步双向DShot/RPM 专用流程写入：${bidirHits.join(' ; ')}`);
+      throw new Error(`dshot_bidir / motor_poles / rpm_filter_* 只能通过第 2 步「双向DShot/RPM」专用流程写入：${bidirHits.join(' ; ')}`);
     }
     const res = await run('CLI 试运行', () => window.bf.fc.runCli(sent, true));
     state.cli.result = { dryRun: true, value: res.ok ? res.value : null, error: res.ok ? null : 'IPC 调用失败' };
@@ -3412,7 +3544,7 @@ function manualCliCard() {
     const bidirHits = sent.filter((c) => BIDIR_PARAM_RE.test(c));
     if (bidirHits.length) {
       appendLog(warnEntry(`拒绝写入：${bidirHits.join(' ; ')} 必须走双向DShot/RPM 专用确认流程`, 'safety'));
-      throw new Error(`dshot_bidir / motor_poles / rpm_filter_* 只能通过第 3 步双向DShot/RPM 专用流程写入：${bidirHits.join(' ; ')}`);
+      throw new Error(`dshot_bidir / motor_poles / rpm_filter_* 只能通过第 2 步「双向DShot/RPM」专用流程写入：${bidirHits.join(' ; ')}`);
     }
     confirmDiffDialog({
       title: '确认手动 CLI 真实写入',
@@ -3436,7 +3568,7 @@ function manualCliCard() {
   return card(
     '高级：手动 CLI / Advanced: manual CLI',
     [
-      el('p', { class: 'hint warn', text: '手动 CLI 只用于诊断。主进程会逐条筛查：禁止参数（failsafe / 电机方向 / ESC 协议 / 电压校准）永远被拒绝；dshot_bidir / motor_poles / rpm_filter_* 在本机被拒绝，必须走第 3 步专用流程。' }),
+      el('p', { class: 'hint warn', text: '手动 CLI 只用于诊断。主进程会逐条筛查：禁止参数（failsafe / 电机方向 / ESC 协议 / 电压校准）永远被拒绝；dshot_bidir / motor_poles / rpm_filter_* 在本机被拒绝，必须走第 2 步「双向DShot/RPM」专用流程。' }),
       el('label', { class: 'field-label', for: 'cli-input', text: '命令 / commands（每行一条）' }),
       area,
       el('div', { class: 'row' }, [dryBtn, el('span', { class: 'hint', text: 'dry-run 只返回将发送的命令，不触碰飞控。' })]),
@@ -3499,7 +3631,7 @@ async function startDownload() {
   state.download.path = out.path ?? null;
   state.download.logs = Array.isArray(out.logs) ? out.logs : [];
   if (state.download.path) state.file = state.download.path;
-  state.done.add(5);
+  state.done.add(1);
   appendLog(infoEntry(`下载完成：${str(state.download.path)}（${state.download.logs.length} 个日志段）`, 'state'));
   renderStep(state.step);
 }
@@ -3611,13 +3743,21 @@ function downloadCard() {
   });
   action(downloadBtn, '下载日志', startDownload);
 
-  const analyseBtn = button('前往分析 / Analyse →', { variant: 'ghost' });
-  action(analyseBtn, '前往分析', async () => showStep(5));
+  // Download and analysis now share one page, so this is no longer a "go to the
+  // analysis page" button: it chains straight into the analysis pass.
+  const analyseBtn = button('下载并分析 / Download & analyse', {
+    variant: 'ghost',
+    enabled: () => state.connected && !busy,
+  });
+  action(analyseBtn, '下载并分析', async () => {
+    if (!state.download.path) await startDownload();
+    if (state.download.path) await runMetrics();
+  });
 
   return card(
     '下载 / Download',
     [
-      el('p', { class: 'hint', text: '通过 MSP 流式读取黑匣子数据；进度来自 download-progress 事件。' }),
+      el('p', { class: 'hint', text: '通过 MSP 流式读取黑匣子数据；进度来自 download-progress 事件。「下载并分析」= 下载 + 运行分析，一步到位。' }),
       el('div', { class: 'row' }, [downloadBtn, analyseBtn]),
       bar,
       msg,
@@ -3895,40 +4035,8 @@ function mscCard() {
   });
 }
 
-function renderBlackbox(body) {
-  if (!state.connected) {
-    body.append(banner('info', '未连接 / Not connected', [para('黑匣子配置与下载需要飞控连接。请先回到第 1 步连接飞控。')]));
-  }
-  // One-shot media auto-detect on first entry (read-only, SAFE MODE compatible).
-  if (state.connected && !state.bb.liveAutoTried) {
-    state.bb.liveAutoTried = true;
-    run('读取黑匣子配置', () => window.bf.bb.readConfig()).then((res) => {
-      if (res.ok) {
-        state.bb.live = res.value && typeof res.value === 'object' ? res.value : null;
-        appendLog(infoEntry(`介质自动检测：${describeBbConfig(state.bb.live)}`, 'state'));
-        renderStep(state.step);
-      }
-    });
-  }
-  // One-shot MSC status probe on first entry (read-only, works in SAFE MODE).
-  if (state.connected && !state.msc.tried) {
-    state.msc.tried = true;
-    refreshMscStatus({ silent: true });
-  }
-  body.append(
-    blackboxMediaCard(),
-    ...blackboxConfigCard(),
-    blackboxLiveCard(),
-    mscCard(),
-    blackboxEraseCard(),
-    downloadCard(),
-    downloadVerifyCard(),
-    manualCliCard(),
-  );
-}
-
 /* ================================================================== *
- * 17. Page 4 — capture
+ * 17. Flight guidance (folded into the analyze page - it has no actions)
  * ================================================================== */
 
 const MANOEUVRES = [
@@ -3941,30 +4049,13 @@ const MANOEUVRES = [
 ];
 
 /**
- * Capture guidance.
+ * How to fly, and what to fly.
  *
- * There is deliberately no timer and no manoeuvre requirement - how long to fly
- * and what to fly is the pilot's call. Nothing on this page gates the analysis.
+ * Deliberately advisory: there is no timer and no manoeuvre requirement, and
+ * nothing here gates the analysis. This used to be a whole page with no action
+ * on it, which only added a click between "configured" and "analysed".
  */
-function captureGuidanceCard() {
-  return card(
-    '采集建议 / Capture guidance',
-    [
-      el('p', {
-        class: 'prose',
-        text: '没有时长与动作的强制要求：飞多久、飞什么动作由你决定。以下只是让频域与时域分析更稳的建议。',
-      }),
-      el('ul', { class: 'evidence' }, [
-        el('li', { text: '混入几种动作（悬停、油门急变、三个轴各打几次杆）能让滤波与 PID 的结论更容易分辨。' }),
-        el('li', { text: '飞行时间越长频谱平均越稳；短日志同样能出结论，只是波动更大。' }),
-        el('li', { text: '落地后先上锁再断开电池，然后回到本工具执行下载与 AI 分析。' }),
-      ]),
-    ],
-    { badges: [badge('建议项，非强制 / advisory', 'info')] },
-  );
-}
-
-function captureRoutineCard() {
+function flightGuidanceCard() {
   const list = el('ol', { class: 'checklist' });
   for (const m of MANOEUVRES) {
     const id = `man-${m.key}`;
@@ -3982,34 +4073,25 @@ function captureRoutineCard() {
     );
   }
   return card(
-    '动作清单 / Routine',
+    '飞行与动作 / How to fly',
     [
       el('p', {
         class: 'prose',
-        text: '以下动作做了就勾一下，方便对照分析结果；不做也不影响出建议。每个动作之间留 2-3 s 稳定悬停，便于自动切分阶跃段。',
+        text: '没有时长与动作的强制要求：飞多久、飞什么动作由你决定。以下是让频域与时域分析更稳的建议，做了就勾一下，不做也不影响出结论。',
       }),
+      el('ul', { class: 'evidence' }, [
+        el('li', { text: '混入几种动作（悬停、油门急变、三个轴各打几次杆）能让滤波与 PID 的结论更容易分辨。' }),
+        el('li', { text: '每个动作之间留 2-3 s 稳定悬停，便于自动切分阶跃段；飞行时间越长频谱平均越稳。' }),
+        el('li', { text: '不要在室内或有人靠近时解锁；螺旋桨按当地安全规范安装。落地后先上锁再断开电池。' }),
+      ]),
       list,
     ],
-    { badges: [badge('可选清单 / optional checklist', 'info')] },
-  );
-}
-
-function renderCapture(body) {
-  body.append(
-    captureGuidanceCard(),
-    captureRoutineCard(),
-    card('采集提示 / Notes', [
-      el('ul', { class: 'evidence' }, [
-        el('li', { text: '不要在室内或有人靠近时解锁；螺旋桨按当地安全规范安装。' }),
-        el('li', { text: '日志包含的动作越丰富，滤波与 PID 的结论越容易分辨；动作单一时结论依然给出，只是置信度更低。' }),
-        el('li', { text: '落地后先上锁再断开电池，然后回到本工具执行第 4 步下载。' }),
-      ]),
-    ]),
+    { badges: [badge('建议项，非强制 / advisory', 'info')] },
   );
 }
 
 /* ================================================================== *
- * 18. Page 5 — AI analysis (metrics + FFT + proposals)
+ * 18. Page 2 — AI analysis (download + metrics + FFT + proposals)
  * ================================================================== */
 
 async function pickLogFile() {
@@ -4045,7 +4127,7 @@ async function runMetrics() {
   state.metrics = res.value && typeof res.value === 'object' ? res.value : null;
   state.proposals = [];
   state.apply = {};
-  state.done.add(6);
+  state.done.add(1);
   const faults = Array.isArray(state.metrics?.faults) ? state.metrics.faults.length : 0;
   appendLog(infoEntry(`分析完成：采样质量 ${fmtRatio(state.metrics?.sampleQuality)}，${faults} 个故障条目`, 'state'));
 
@@ -4443,14 +4525,33 @@ function copyCliButton(lines, codeNode) {
   return btn;
 }
 
-/** ③ 改什么: the CLI lines in a monospace, copyable block. */
-function cliConclusionSection(cliLines) {
+/**
+ * ③ 改什么: what each parameter is now, what it becomes, then the CLI lines.
+ *
+ * The table comes first on purpose. "set d_yaw = 3" alone makes the operator
+ * reverse-engineer what changed; the table states it directly as
+ * "d_yaw: 0 -> 3" so the change is readable without knowing the current tune.
+ */
+function cliConclusionSection(cliLines, diffRows) {
+  const rows = Array.isArray(diffRows) ? diffRows : [];
   const code = codeBlock(cliLines);
   const head = el('div', { class: 'code-head' }, [
     el('span', { class: 'field-label', text: `CLI（${cliLines.length} 行，不自动写入）/ commands` }),
     cliLines.length ? copyCliButton(cliLines, code) : null,
   ]);
-  return propSection('改什么', 'CLI change', el('div', { class: 'code-wrap' }, [head, code]));
+
+  const body = [];
+  if (rows.length) {
+    body.push(
+      el('p', {
+        class: 'hint',
+        text: '直接改动如下：每一行是「参数：现在是 → 改成」。',
+      }),
+      diffTable(rows),
+    );
+  }
+  if (cliLines.length) body.push(el('div', { class: 'code-wrap' }, [head, code]));
+  return propSection('改什么', 'CLI change', el('div', {}, body));
 }
 
 function proposalCard(p, index, opts = {}) {
@@ -4475,7 +4576,7 @@ function proposalCard(p, index, opts = {}) {
   const sections = [
     propSection('哪里不对', 'Problem', para(p?.problem)),
     propSection('证据', 'Evidence', para(p?.evidence, 'prose mono')),
-    cliConclusionSection(cliLines),
+    cliConclusionSection(cliLines, diffRows),
     whyText ? propSection('为什么', 'Why', para(whyText)) : null,
     propSection('飞什么动作验证', 'Re-fly verification', para(p?.verification)),
     notAppliedText ? propSection('不写会怎样', 'If not applied', para(notAppliedText)) : null,
@@ -4812,6 +4913,10 @@ function renderAnalysis(body) {
   action(proposeBtn, '生成建议', proposeTunes);
 
   const parts = [
+    // Downloading the log is the first thing an operator does after a flight, so
+    // it lives here instead of on a separate blackbox page.
+    downloadCard(),
+    downloadVerifyCard(),
     card(
       '日志来源 / Source',
       [
@@ -4841,18 +4946,254 @@ function renderAnalysis(body) {
   } else {
     parts.push(card('建议 / Proposals', [el('p', { class: 'hint', text: '尚未运行分析。' })]));
   }
+  // The optional AI agent sits right after the rule proposals: same evidence,
+  // a second opinion, still advisory.
+  parts.push(...aiAgentCard());
   // The re-fly evaluation stands on its own: it is shown before and after an
   // analysis pass, so an operator can judge a flight without re-running metrics.
   if (!metrics) parts.push(evaluationCard());
   // FFT spectrum follows the metrics report (offline, no libraries).
   parts.push(fftCard());
+  // How to fly, folded in here: it used to be its own page with no action on it.
+  parts.push(flightGuidanceCard());
 
   body.append(...parts);
   paintFft();
 }
 
 /* ================================================================== *
- * 19. Page 6 — history
+ * 18b. AI agent layer (optional; advisory only)
+ * ================================================================== */
+
+/** Load the stored AI settings once per session (never returns the API key). */
+async function loadAiConfig() {
+  if (state.ai.loading) return;
+  state.ai.loading = true;
+  const res = await run('读取 AI 设置', () => window.bf.ai.getConfig());
+  state.ai.loading = false;
+  if (!res.ok) {
+    renderStep(state.step);
+    return;
+  }
+  state.ai.config = res.value && typeof res.value === 'object' ? res.value : null;
+  renderStep(state.step);
+}
+
+async function saveAiConfig(patch) {
+  const res = await run('保存 AI 设置', () => window.bf.ai.setConfig(patch));
+  if (!res.ok) return;
+  state.ai.config = res.value && typeof res.value === 'object' ? res.value : null;
+  appendLog(infoEntry(`AI 设置已保存：${str(state.ai.config?.model)} @ ${str(state.ai.config?.baseUrl)}`));
+  renderStep(state.step);
+}
+
+/**
+ * Send the measured report to the configured model and render its review.
+ *
+ * Only the derived measurements travel (see buildEvidencePack); the .bbl itself
+ * never leaves the machine.
+ */
+async function runAiReview() {
+  if (!state.metrics || state.ai.busy) return;
+  state.ai.busy = true;
+  state.ai.error = null;
+  showOpProgress('AI 智能体分析 / ai.analyze …', null);
+  const res = await run('AI 智能体分析', () =>
+    window.bf.ai.analyze({ metrics: state.metrics, file: state.file, level: state.ai.level }),
+  );
+  showOpProgress(null);
+  state.ai.busy = false;
+  if (!res.ok) {
+    state.ai.error = errMessage(res.error);
+    renderStep(state.step);
+    return;
+  }
+  const out = res.value && typeof res.value === 'object' ? res.value : {};
+  if (out.ok === false) {
+    state.ai.error = str(out.error) || 'AI 返回无法解析';
+    state.ai.result = out;
+  } else {
+    state.ai.result = out;
+    state.ai.error = null;
+    appendLog(
+      infoEntry(
+        `AI 评审完成：${(out.proposals || []).length} 条建议（${str(out.model)}，${str(out.packLevel)} 档 ${fmtInt(Math.round((out.packChars || 0) / 1024))} KB，${fmtInt(out.elapsedMs)} ms）`,
+        'state',
+      ),
+    );
+  }
+  renderStep(state.step);
+}
+
+/** Save the pack + prompt to a file, so any assistant can receive the whole log. */
+async function exportAiPack() {
+  const res = await run('导出 AI 分析包', () => window.bf.ai.exportPack({ metrics: state.metrics, level: state.ai.level }));
+  if (!res.ok) return;
+  const out = res.value && typeof res.value === 'object' ? res.value : {};
+  if (out.canceled) {
+    appendLog(infoEntry('已取消导出'));
+    return;
+  }
+  state.ai.exportResult = out;
+  appendLog(infoEntry(`分析包已导出：${str(out.path)}（${str(out.level)} 档，${fmtInt(Math.round((out.chars || 0) / 1024))} KB）`, 'state'));
+  renderStep(state.step);
+}
+
+/** Provider + key form. The key is write-only: it is never rendered back. */
+function aiSettingsForm() {
+  const cfg = state.ai.config || {};
+  const baseUrl = el('input', { class: 'input mono-num', id: 'ai-base-url', type: 'text', value: str(cfg.baseUrl) });
+  const model = el('input', { class: 'input mono-num', id: 'ai-model', type: 'text', value: str(cfg.model) });
+  const apiKey = el('input', { class: 'input mono-num', id: 'ai-api-key', type: 'password', placeholder: cfg.hasApiKey ? '已保存，留空表示不修改' : '粘贴你的 API key' });
+
+  const enableBox = el('input', { type: 'checkbox', id: 'ai-enabled', checked: Boolean(cfg.enabled) });
+
+  const saveBtn = button('保存设置 / Save', { variant: 'primary' });
+  action(saveBtn, '保存 AI 设置', async () => {
+    await saveAiConfig({
+      enabled: enableBox.checked,
+      baseUrl: baseUrl.value,
+      model: model.value,
+      apiKey: apiKey.value,
+    });
+    apiKey.value = '';
+  });
+
+  return el('div', {}, [
+    el('div', { class: 'row' }, [
+      enableBox,
+      el('label', { for: 'ai-enabled', text: '启用 AI 分析 / enable AI' }),
+      cfg.hasApiKey ? chip('已配置密钥 / key stored', 'ok') : chip('未配置密钥 / no key', 'warn'),
+    ]),
+    el('div', { class: 'kv-grid' }, [
+      el('div', {}, [el('span', { class: 'field-label', text: '接口地址 / baseUrl' }), baseUrl]),
+      el('div', {}, [el('span', { class: 'field-label', text: '模型 / model' }), model]),
+      el('div', {}, [el('span', { class: 'field-label', text: 'API key（只写不读 / write-only）' }), apiKey]),
+    ]),
+    el('p', {
+      class: 'hint',
+      text: '兼容 OpenAI /chat/completions 的服务都可用：DeepSeek（https://api.deepseek.com/v1 + deepseek-chat）、Kimi（https://api.moonshot.cn/v1 + kimi-k2.6）、本地 Ollama（http://127.0.0.1:11434/v1 + 任意模型）。密钥存在本机 userData/ai-config.json（权限 0600），不会写进备份、报告或日志。',
+    }),
+    el('div', { class: 'row' }, [saveBtn]),
+  ]);
+}
+
+/** Render one AI suggestion in the same six-part order as a rule proposal. */
+function aiSuggestionCard(s, index) {
+  const p = proposalCard(s, index, { ai: true });
+  return p;
+}
+
+function aiAgentCard() {
+  if (!state.ai.config && !state.ai.loading) {
+    // Lazy one-shot read on first render of the analysis page.
+    loadAiConfig();
+  }
+  const cfg = state.ai.config;
+  const r = state.ai.result;
+  const enabled = Boolean(cfg?.enabled);
+  const ready = enabled && Boolean(cfg?.hasApiKey);
+
+  const runBtn = button(state.ai.busy ? '分析中… / running' : 'AI 智能体分析 / Ask the agent', {
+    variant: ready ? 'primary' : 'ghost',
+    enabled: () => ready && Boolean(state.metrics) && !state.ai.busy,
+  });
+  action(runBtn, 'AI 智能体分析', runAiReview);
+
+  const settingsBtn = button(state.ai.showSettings ? '收起设置 / Hide settings' : '设置 / Settings', { variant: 'ghost' });
+  action(settingsBtn, '切换 AI 设置', async () => {
+    state.ai.showSettings = !state.ai.showSettings;
+    renderStep(state.step);
+  });
+
+  // Detail level: how much of the log actually travels with the request.
+  const levelSel = el('select', { class: 'input input-sm', id: 'ai-level' }, [
+    el('option', { value: 'compact', text: '紧凑 / compact（~9 KB，仅派生指标）', selected: state.ai.level === 'compact' }),
+    el('option', { value: 'standard', text: '标准 / standard（~120 KB，含时间序列）', selected: state.ai.level === 'standard' }),
+    el('option', { value: 'full', text: '完整 / full（~600 KB，需大上下文模型）', selected: state.ai.level === 'full' }),
+  ]);
+  levelSel.addEventListener('change', () => {
+    state.ai.level = levelSel.value;
+    state.ai.exportResult = null;
+    renderStep(state.step);
+  });
+
+  const exportBtn = button('导出分析包 / Export pack', {
+    variant: 'ghost',
+    enabled: () => Boolean(state.metrics),
+  });
+  action(exportBtn, '导出 AI 分析包', exportAiPack);
+
+  const parts = [
+    el('p', {
+      class: 'prose',
+      text: '规则引擎负责测量（频谱、阶跃、洗桨指数、RPM 谐波，全部本地离线），大模型负责推理并写出建议。原始 .bbl 不会离开本机；下面是「发给模型的内容有多少」。',
+    }),
+    el('div', { class: 'row' }, [
+      el('span', { class: 'field-label', text: '数据完整度 / detail' }),
+      levelSel,
+      runBtn,
+      settingsBtn,
+      exportBtn,
+    ]),
+    el('ul', { class: 'evidence' }, [
+      el('li', { text: '紧凑：只有派生测量值，最省 token，适合快速复核。' }),
+      el('li', { text: '标准：完整黑匣子 header + 全部通道统计 + 全部峰值 + 降采样频谱 + 分段统计 + 全程时间序列包络。' }),
+      el('li', { text: '完整：在标准之上把时间序列的采样密度提高数倍，让模型看清抖动/掉速出现的具体时刻；需要 128K 上下文的模型。' }),
+      el('li', { text: '导出分析包：把同一份内容写成 .txt，可直接粘贴或作为附件交给任意大模型（不受本 app 端点限制）。' }),
+    ]),
+    el('div', { class: 'row' }, [
+      cfg ? chip(`${str(cfg.model)} @ ${str(cfg.baseUrl)}`, enabled ? 'ok' : 'idle') : chip('读取设置中…', 'idle'),
+      ready ? null : chip(enabled ? '缺少 API key' : 'AI 未启用', 'warn'),
+      state.metrics ? null : chip('先运行分析 / run metrics first', 'warn'),
+      r?.packChars ? chip(`上次发送 ${fmtInt(Math.round(r.packChars / 1024))} KB`, 'idle') : null,
+      r?.usage ? chip(`tokens ${fmtInt(r.usage.total_tokens)}`, 'idle') : null,
+    ]),
+  ];
+
+  if (state.ai.exportResult) {
+    parts.push(
+      el('p', {
+        class: 'hint ok',
+        text: `已导出：${str(state.ai.exportResult.path)}（${str(state.ai.exportResult.level)} 档，${fmtInt(Math.round((state.ai.exportResult.chars || 0) / 1024))} KB）`,
+      }),
+    );
+  }
+
+  // First-run help: an unconfigured agent shows its form immediately instead of
+  // hiding the only control behind a "settings" toggle.
+  if (state.ai.showSettings || !cfg || !ready) parts.push(aiSettingsForm());
+
+  if (state.ai.error) {
+    parts.push(banner('warn', 'AI 分析未完成 / AI call failed', [para(state.ai.error), r?.raw ? codeBlock([str(r.raw)]) : null].filter(Boolean)));
+  }
+
+  if (r?.ok) {
+    if (r.verdict) {
+      parts.push(el('div', {}, [el('span', { class: 'field-label', text: '总评 / verdict' }), para(r.verdict, 'prose')]));
+    }
+    if (r.notes) {
+      parts.push(el('div', {}, [el('span', { class: 'field-label', text: '其他观察 / notes' }), para(r.notes, 'prose')]));
+    }
+  }
+
+  const cardNode = card('AI 智能体分析 / AI agent', parts, {
+    badges: ready ? [badge('已启用 / enabled', 'ok'), badge('仅建议 / advisory only', 'warn')] : [badge('未启用 / disabled', 'idle')],
+  });
+
+  const out = [cardNode];
+  if (r?.ok && Array.isArray(r.proposals) && r.proposals.length) {
+    out.push(el('div', { class: 'proposals' }, r.proposals.map((s, i) => aiSuggestionCard(s, i))));
+  } else if (r?.ok) {
+    out.push(card('AI 建议 / AI suggestions', [el('p', { class: 'hint', text: '模型没有给出可执行的参数改动（可能因为数据不足，或存在 blocksTuning 故障）。' })]));
+  }
+  return out;
+}
+
+
+
+/* ================================================================== *
+ * 19. Page 3 — history
  * ================================================================== */
 
 async function loadHistoryList() {
@@ -5303,6 +5644,11 @@ function wireStaticUI() {
   for (const btn of $$('.rail .step')) {
     btn.addEventListener('click', () => goStep(Number(btn.dataset.step)));
   }
+
+  // Wired exactly once: this runs from boot(), not from a repaint, so the
+  // listener cannot accumulate.
+  const themeBtn = $('#theme-toggle');
+  if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
   const toggle = $('#log-toggle');
   if (toggle) {
     toggle.addEventListener('click', () => setLogOpen(toggle.getAttribute('aria-expanded') !== 'true'));
@@ -5346,6 +5692,86 @@ function wireStaticUI() {
  * ------------------------------------------------------------------ */
 
 const FIRST_RUN_KEY = 'bf-ai-tuner.firstRunNoticeSeen';
+
+/* ------------------------------------------------------------------ *
+ * Theme (light / dark), following the Betaflight Configurator palette
+ *
+ * The palette itself lives entirely in styles.css as custom properties, so the
+ * only job here is choosing which set applies and repainting the canvases,
+ * which read CSS variables at draw time and therefore cannot follow on their own.
+ * ------------------------------------------------------------------ */
+
+const THEME_KEY = 'bf.theme';
+const THEME_MODES = ['auto', 'light', 'dark'];
+const THEME_LABEL = { auto: '自动 / Auto', light: '浅色 / Light', dark: '深色 / Dark' };
+const THEME_ICON = { auto: '◐', light: '☀︎', dark: '☾' };
+
+/** Resolves a mode to a concrete theme; "auto" follows the OS setting. */
+function resolveTheme(mode) {
+  if (mode === 'light' || mode === 'dark') return mode;
+  const prefersLight =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: light)').matches;
+  return prefersLight ? 'light' : 'dark';
+}
+
+function readThemeMode() {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (THEME_MODES.includes(saved)) return saved;
+  } catch {
+    // Private browsing or storage disabled - fall back to following the OS.
+  }
+  return 'auto';
+}
+
+/**
+ * Applies a theme and repaints what CSS cannot reach.
+ *
+ * Canvas charts resolve their colours from the CSS variables when they draw, so
+ * a theme change has to redraw them: re-rendering the current step rebuilds the
+ * per-motor sparklines, and the FFT canvas is painted separately.
+ */
+function applyTheme(mode, { repaint = true } = {}) {
+  const wanted = THEME_MODES.includes(mode) ? mode : 'auto';
+  const resolved = resolveTheme(wanted);
+  const root = document.documentElement;
+  root.dataset.theme = resolved;
+  root.dataset.themeMode = wanted;
+  // Match native form controls / scrollbars to the chosen appearance.
+  root.style.colorScheme = resolved;
+
+  state.theme = wanted;
+  const label = $('#theme-label');
+  if (label) label.textContent = THEME_LABEL[wanted];
+  const icon = $('#theme-icon');
+  if (icon) icon.textContent = THEME_ICON[wanted];
+  const btn = $('#theme-toggle');
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(resolved === 'light'));
+    btn.title = `当前：${THEME_LABEL[wanted]}（${resolved === 'light' ? '浅色' : '深色'}）/ click to cycle`;
+  }
+
+  try {
+    window.localStorage.setItem(THEME_KEY, wanted);
+  } catch {
+    // Persistence is a nicety; the theme still applies for this session.
+  }
+
+  if (repaint) {
+    paintFft();
+    renderStep(state.step);
+  }
+  return resolved;
+}
+
+/** Cycles auto -> light -> dark -> auto. */
+function toggleTheme() {
+  const current = THEME_MODES.includes(state.theme) ? state.theme : 'auto';
+  const next = THEME_MODES[(THEME_MODES.indexOf(current) + 1) % THEME_MODES.length];
+  applyTheme(next);
+  appendLog(infoEntry(`主题切换：${THEME_LABEL[next]}`, 'state'));
+}
 
 /**
  * macOS raises no serial-port consent prompt for an unsigned build - there is no
@@ -5415,6 +5841,13 @@ function maybeShowFirstRunNotice() {
 
 async function boot() {
   wireStaticUI();
+  // Apply before anything renders so there is no flash of the wrong theme.
+  applyTheme(readThemeMode(), { repaint: false });
+  if (typeof window.matchMedia === 'function') {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => {
+      if ((state.theme ?? 'auto') === 'auto') applyTheme('auto');
+    });
+  }
   if (!window.bf) {
     fatalNoPreload();
     return;
@@ -5457,6 +5890,10 @@ if (window.__BF_UI_TEST__) {
     sortableTable,
     FFT_MAX_POINTS,
     BIDIR_HISTORY_MAX,
+    applyTheme,
+    resolveTheme,
+    toggleTheme,
+    THEME_MODES,
   };
 }
 

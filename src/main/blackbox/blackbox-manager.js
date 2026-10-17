@@ -204,8 +204,12 @@ export class BlackboxManager {
       return { applied: false, dryRun: true, commands, diff, warnings, ratePlan, deviceName, enabledFields: [...enabledFields] };
     }
 
-    // Real write: CLI, then verify by re-reading over MSP.
-    const { results } = await this.helper.cliRun(commands, {
+    // Real write: CLI + save, then verify by re-reading over MSP. `save` is what
+    // persists the logging configuration to EEPROM; without it a power cycle
+    // silently restores the old device/rate and the next flight records nothing
+    // usable. The MSP read-back below is also what re-opens the link after the
+    // reboot a `save` triggers.
+    const { results } = await this.helper.cliRun([...commands, 'save'], {
       onProgress: (p) => this.onEvent({ kind: 'progress', level: 'debug', message: `blackbox: ${p.command}` }),
     });
 
@@ -214,8 +218,15 @@ export class BlackboxManager {
       warnings.push(`${failed.length} command(s) echoed an error; configuration may be partially applied.`);
     }
 
-    const after = await this.helper.readBlackboxConfig();
+    // A `save` reboots the FC, so this read-back races the reboot. A read that
+    // fails or lands too early is not a failed write: report it and let the
+    // operator re-check, instead of throwing away a write that already landed.
+    const after = await this.helper.readBlackboxConfig().catch((err) => {
+      warnings.push(`写入并保存成功，但重启后的读回失败（${err.message}）；飞控重新连接后在黑匣子页复核。`);
+      return null;
+    });
     const verified =
+      Boolean(after) &&
       after.device === DEVICE_IDS[deviceName] &&
       after.rateDivisor === ratePlan.denom &&
       (after.disabledMask === targetMask || after.disabledMask === 0);

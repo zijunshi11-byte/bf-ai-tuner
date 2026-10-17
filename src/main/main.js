@@ -39,6 +39,8 @@ function userDataPaths() {
     userDataDir,
     seedMapPath: join(projectRoot, 'src', 'main', 'fc', 'model-map.json'),
     localMapPath: join(userDataDir, 'model-map.local.json'),
+    // Holds the optional AI endpoint + API key; mode 0600, never exported.
+    aiConfigPath: join(userDataDir, 'ai-config.json'),
   };
 }
 
@@ -131,6 +133,14 @@ async function bootstrap() {
         ],
       });
       return result.canceled || !result.filePaths.length ? null : result.filePaths[0];
+    },
+    saveFile: async ({ defaultPath = null, filters = [] } = {}) => {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export',
+        defaultPath: defaultPath || undefined,
+        filters: filters.length ? filters : [{ name: 'All files', extensions: ['*'] }],
+      });
+      return result.canceled || !result.filePath ? null : result.filePath;
     },
   });
 

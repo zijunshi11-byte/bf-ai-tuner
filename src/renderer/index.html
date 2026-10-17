@@ -25,6 +25,11 @@
         <span class="brand-sub">黑匣子调参控制台 / Blackbox tuning console</span>
       </div>
       <div class="appbar-meta">
+        <button id="theme-toggle" class="chip theme-toggle" type="button"
+                title="切换深浅色 / Toggle light and dark theme (Betaflight palette)">
+          <span id="theme-icon" class="theme-icon" aria-hidden="true">◐</span>
+          <span id="theme-label">自动 / Auto</span>
+        </button>
         <span id="app-info" class="chip mono" title="应用信息">…</span>
         <span id="preload-state" class="chip chip-crit" hidden>preload 未就绪 / window.bf missing</span>
       </div>
@@ -47,8 +52,8 @@
             <button type="button" class="step" data-step="1">
               <span class="step-no mono" aria-hidden="true">2</span>
               <span class="step-text">
-                <span class="step-zh">飞控识别</span>
-                <span class="step-en">Identify</span>
+                <span class="step-zh">分析调参</span>
+                <span class="step-en">Analyze</span>
               </span>
               <span class="step-mark" aria-hidden="true">○</span>
             </button>
@@ -56,46 +61,6 @@
           <li>
             <button type="button" class="step" data-step="2">
               <span class="step-no mono" aria-hidden="true">3</span>
-              <span class="step-text">
-                <span class="step-zh">双向DShot&amp;RPM</span>
-                <span class="step-en">Bidir DShot</span>
-              </span>
-              <span class="step-mark" aria-hidden="true">○</span>
-            </button>
-          </li>
-          <li>
-            <button type="button" class="step" data-step="3">
-              <span class="step-no mono" aria-hidden="true">4</span>
-              <span class="step-text">
-                <span class="step-zh">黑匣子 2k</span>
-                <span class="step-en">Blackbox</span>
-              </span>
-              <span class="step-mark" aria-hidden="true">○</span>
-            </button>
-          </li>
-          <li>
-            <button type="button" class="step" data-step="4">
-              <span class="step-no mono" aria-hidden="true">5</span>
-              <span class="step-text">
-                <span class="step-zh">飞行采集</span>
-                <span class="step-en">Capture</span>
-              </span>
-              <span class="step-mark" aria-hidden="true">○</span>
-            </button>
-          </li>
-          <li>
-            <button type="button" class="step" data-step="5">
-              <span class="step-no mono" aria-hidden="true">6</span>
-              <span class="step-text">
-                <span class="step-zh">AI分析</span>
-                <span class="step-en">Analysis</span>
-              </span>
-              <span class="step-mark" aria-hidden="true">○</span>
-            </button>
-          </li>
-          <li>
-            <button type="button" class="step" data-step="6">
-              <span class="step-no mono" aria-hidden="true">7</span>
               <span class="step-text">
                 <span class="step-zh">历史报告</span>
                 <span class="step-en">History</span>
@@ -119,57 +84,25 @@
         <section class="panel" id="panel-0" data-step="0" aria-labelledby="step-title-0">
           <header class="panel-head">
             <h2 id="step-title-0" tabindex="-1">1 · 连接 <span class="panel-en">Connect</span></h2>
-            <p class="panel-sub">选择串口并建立 MSP 会话（115200）。Select a serial port and open an MSP session.</p>
+            <p class="panel-sub">选择串口并建立 MSP 会话（115200）。连接后自动识别飞控、备份设置、检测双向 DShot、读取黑匣子配置。Select a port; on connect the app auto-identifies, backs up, probes bidir DShot and reads blackbox config.</p>
           </header>
           <div class="panel-body" id="body-0"></div>
         </section>
 
         <section class="panel" id="panel-1" data-step="1" aria-labelledby="step-title-1" hidden>
           <header class="panel-head">
-            <h2 id="step-title-1" tabindex="-1">2 · 飞控识别 <span class="panel-en">Identify</span></h2>
-            <p class="panel-sub">读取固件 / 板卡指纹、完整 dump 备份与能力探测。Fingerprint the FC, persist a full dump backup, probe capabilities.</p>
+            <h2 id="step-title-1" tabindex="-1">2 · 分析调参 <span class="panel-en">Analyze</span></h2>
+            <p class="panel-sub">下载或选择 .bbl → 分析 → 建议 → 写入并复飞验证。Download or pick a .bbl → analyse → propose → write and re-fly.</p>
           </header>
           <div class="panel-body" id="body-1"></div>
         </section>
 
         <section class="panel" id="panel-2" data-step="2" aria-labelledby="step-title-2" hidden>
           <header class="panel-head">
-            <h2 id="step-title-2" tabindex="-1">3 · 双向DShot&amp;RPM <span class="panel-en">Bidir DShot</span></h2>
-            <p class="panel-sub">检测双向 DShot / RPM 遥测状态、每电机转速与建议修复。Probe bidirectional DShot / RPM telemetry and suggested fixes.</p>
-          </header>
-          <div class="panel-body" id="body-2"></div>
-        </section>
-
-        <section class="panel" id="panel-3" data-step="3" aria-labelledby="step-title-3" hidden>
-          <header class="panel-head">
-            <h2 id="step-title-3" tabindex="-1">4 · 黑匣子 2k <span class="panel-en">Blackbox</span></h2>
-            <p class="panel-sub">配置 2 kHz 采样、介质与记录字段；擦除、下载并校验日志。Configure 2 kHz logging, medium and fields; erase, download and verify.</p>
-          </header>
-          <div class="panel-body" id="body-3"></div>
-        </section>
-
-        <section class="panel" id="panel-4" data-step="4" aria-labelledby="step-title-4" hidden>
-          <header class="panel-head">
-            <h2 id="step-title-4" tabindex="-1">5 · 飞行采集 <span class="panel-en">Capture</span></h2>
-            <p class="panel-sub">飞行与动作不限，建议混入多种动作以便分辨滤波与 PID 结论。Fly however you like; varied inputs make filter and PID findings easier to separate.</p>
-          </header>
-          <div class="panel-body" id="body-4"></div>
-        </section>
-
-        <section class="panel" id="panel-5" data-step="5" aria-labelledby="step-title-5" hidden>
-          <header class="panel-head">
-            <h2 id="step-title-5" tabindex="-1">6 · AI分析 <span class="panel-en">Analysis</span></h2>
-            <p class="panel-sub">问题 → 证据 → CLI 建议 → 复飞验证，附 FFT 频谱图。Problem → evidence → CLI → re-fly verification, with FFT spectrum.</p>
-          </header>
-          <div class="panel-body" id="body-5"></div>
-        </section>
-
-        <section class="panel" id="panel-6" data-step="6" aria-labelledby="step-title-6" hidden>
-          <header class="panel-head">
-            <h2 id="step-title-6" tabindex="-1">7 · 历史报告 <span class="panel-en">History</span></h2>
+            <h2 id="step-title-2" tabindex="-1">3 · 历史报告 <span class="panel-en">History</span></h2>
             <p class="panel-sub">查看已保存的分析报告与建议（只读）。Browse saved analysis reports and proposals (read-only).</p>
           </header>
-          <div class="panel-body" id="body-6"></div>
+          <div class="panel-body" id="body-2"></div>
         </section>
       </main>
     </div>

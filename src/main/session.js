@@ -10,6 +10,7 @@
 
 import { EventEmitter } from 'node:events';
 import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { MspClient } from './msp/msp-client.js';
 import { MspHelper } from './msp/msp-helper.js';
 import { SerialTransport, listPorts } from './msp/msp-transport.js';
@@ -23,12 +24,14 @@ import { enterMsc, exitMsc, findFcVolumes, importLogs } from './blackbox/msc.js'
 import { compareRuns } from './analysis/compare-runs.js';
 import { decodeBbl } from './analysis/bbl-decode.js';
 import { computeMetrics } from './analysis/bbl-metrics.js';
+import { buildEvidencePack, runAiAnalysis, buildUserPrompt, AI_SYSTEM_PROMPT, packSizeChars } from './analysis/ai-agent.js';
+import { readAiConfig, writeAiConfig, publicAiConfig } from './ai-config.js';
 
 export class Session extends EventEmitter {
   /**
-   * @param {{userDataDir:string, seedMapPath:string, localMapPath:string}} paths
+   * @param {{userDataDir:string, seedMapPath:string, localMapPath:string, aiConfigPath?:string}} paths
    */
-  constructor({ userDataDir, seedMapPath, localMapPath, transportFactory = (p) => new SerialTransport(p) }) {
+  constructor({ userDataDir, seedMapPath, localMapPath, aiConfigPath = null, transportFactory = (p) => new SerialTransport(p) }) {
     super();
     // Injectable so the full workflow can be driven against a VirtualTransport in tests.
     this.transportFactory = transportFactory;
@@ -36,6 +39,7 @@ export class Session extends EventEmitter {
       userDataDir,
       seedMapPath,
       localMapPath,
+      aiConfigPath: aiConfigPath ?? `${userDataDir}/ai-config.json`,
       backupDir: `${userDataDir}/backups`,
       backupStoreDir: `${userDataDir}/backups/store`,
       captureDir: `${userDataDir}/captures`,
@@ -264,7 +268,7 @@ export class Session extends EventEmitter {
       note,
     });
 
-    this.guard.recordBackup({ path: entry.dir, sha256: settings.backupSha256 });
+    this.guard.markBackup({ path: entry.dir, sha256: settings.backupSha256 });
     this.lastBackupId = entry.id;
     this.#log('info', `已创建备份 ${entry.id}`);
     return { ok: true, ...entry, path: entry.dir, sha256: settings.backupSha256 };
@@ -554,6 +558,11 @@ export class Session extends EventEmitter {
     report.decodeStats = stats;
 
     this.metrics = report;
+    // Kept so the optional AI agent can serialise the whole flight (channels,
+    // header, time series) instead of only the derived numbers. Cleared when
+    // the analysed file changes.
+    this.lastLog = log;
+    this.lastLogFile = file;
     this.guard.latchFaults(report.faults || []);
     if (axis) report.axisFilter = axis;
 
@@ -567,8 +576,12 @@ export class Session extends EventEmitter {
     const report = metrics || this.metrics;
     if (!report) throw new Error('run bbl_metrics on a log first');
 
-    const pid = currentPid || this.settings?.pid || null;
-    const filter = currentFilter || this.settings?.filter || null;
+    // Live FC settings win; when the operator is analysing a log offline there
+    // is no FC, so fall back to the configuration the log itself carries. That
+    // is what turns "your filters may be off" into "75 Hz -> 120 Hz".
+    const craft = report.craftSettings || {};
+    const pid = currentPid || this.settings?.pid || craft.pid || null;
+    const filter = currentFilter || this.settings?.filter || craft.filter || null;
 
     // Dynamic-D and I-term-relax decide whether propwash is fixed by raising
     // D_min (preferred, no extra motor heat) or by static D.
@@ -581,8 +594,17 @@ export class Session extends EventEmitter {
         yaw: numeric(raw.d_min_yaw),
       },
       dMinBoostGain: numeric(raw.d_min_boost_gain),
-      itermRelaxCutoff: numeric(raw.iterm_relax_cutoff),
-      antiGravityGain: numeric(raw.anti_gravity_gain),
+      // Live read-back first, then whatever the log's own header recorded.
+      itermRelaxCutoff: numeric(raw.iterm_relax_cutoff) ?? craft.dynamics?.itermRelaxCutoff ?? null,
+      antiGravityGain: numeric(raw.anti_gravity_gain) ?? craft.dynamics?.antiGravityGain ?? null,
+      // TPA: the high-throttle heat lever. The rule refuses to build a diff
+      // without the live read-back, so these must travel with the analysis
+      // input - without them the finding is permanently advisory on hardware.
+      // tpa_mode stays a string ('D' / 'PD'); it decides whether the
+      // attenuation hits D only or P and D together.
+      tpaRate: numeric(raw.tpa_rate),
+      tpaBreakpoint: numeric(raw.tpa_breakpoint),
+      tpaMode: typeof raw.tpa_mode === 'string' ? raw.tpa_mode : null,
     };
 
     const proposals = proposeTune({
@@ -601,6 +623,9 @@ export class Session extends EventEmitter {
     });
 
     this.lastProposal = annotated[0] || null;
+    // Kept so the optional AI review can see what the rule engine already
+    // concluded (agree / disagree / add) instead of re-deriving it blind.
+    this.lastProposalsForAi = annotated;
 
     // History: persist the analysis + proposals so the 历史报告 page can reopen
     // them. The return value stays a bare array (renderer contract).
@@ -611,6 +636,117 @@ export class Session extends EventEmitter {
     }
 
     return annotated;
+  }
+
+  /* ---------------- AI agent analysis (optional) ---------------- */
+
+  /** Stored AI settings, key redacted down to a boolean. */
+  getAiConfig() {
+    return publicAiConfig(readAiConfig(this.paths.aiConfigPath));
+  }
+
+  /** Patch the AI settings. An empty `apiKey` leaves the stored one untouched. */
+  setAiConfig(patch = {}) {
+    const current = readAiConfig(this.paths.aiConfigPath);
+    const next = writeAiConfig(this.paths.aiConfigPath, { ...current, ...patch });
+    this.#log('info', `AI 设置已保存：${next.model || '未指定模型'} @ ${next.baseUrl || '未指定地址'}${next.enabled ? '' : '（未启用）'}`);
+    return publicAiConfig(next);
+  }
+
+  /**
+   * Build the analysis pack that would be sent for a given detail level.
+   *
+   * Kept separate so the operator can inspect/export exactly what the model
+   * would receive before spending a request on it.
+   */
+  buildAiPack({ metrics = null, level = 'standard' } = {}) {
+    const report = metrics || this.metrics || null;
+    if (!report) throw new Error('run bbl_metrics on a log first');
+    const log = this.lastLog && this.lastLogFile === (report.file || this.lastLogFile) ? this.lastLog : this.lastLog;
+    const pack = buildEvidencePack({
+      metrics: report,
+      craftSettings: report.craftSettings || null,
+      proposals: this.lastProposalsForAi || [],
+      identity: this.identity || null,
+      header: log?.header || null,
+      log,
+      level,
+    });
+    return { pack, chars: packSizeChars(pack) };
+  }
+
+  /**
+   * Export the pack + prompt to a text file.
+   *
+   * Lets the operator hand the *complete* log summary to any assistant that
+   * accepts an attachment, without this app holding an API key for it.
+   */
+  async exportAiPack({ metrics = null, level = 'full', filePath = null } = {}) {
+    const { pack, chars } = this.buildAiPack({ metrics, level });
+    if (!filePath) throw new Error('a destination path is required');
+    const prompt = buildUserPrompt(pack);
+    const text = [
+      `# BF-AITuner AI 分析包 / analysis pack`,
+      `# level: ${pack.level}   chars: ${chars}`,
+      `# generated: ${new Date().toISOString()}`,
+      `# 用法：把本文件内容整段粘贴给任意大模型，或作为附件上传。`,
+      '',
+      '===== SYSTEM =====',
+      AI_SYSTEM_PROMPT,
+      '',
+      '===== USER =====',
+      prompt,
+      '',
+    ].join('\n');
+    await writeFile(filePath, text, 'utf8');
+    this.#log('info', `AI 分析包已导出：${filePath}（${level} 档，${Math.round(text.length / 1024)} KB）`);
+    return { path: filePath, level: pack.level, chars: text.length, packBytes: chars };
+  }
+
+  /**
+   * Run the optional AI review over an already-measured report.
+   *
+   * The rules measured; the model reasons. Nothing is written to the FC here -
+   * the return value is advisory text plus screened diffs, and applying is
+   * still the separate two-phase flow.
+   */
+  async aiAnalyze({ metrics = null, file = null, level = 'standard' } = {}) {
+    const config = readAiConfig(this.paths.aiConfigPath);
+    if (!config.enabled) throw new Error('AI 分析未启用，请先在设置里打开并填写 API key / AI disabled');
+    if (!config.apiKey) throw new Error('未配置 API key / no API key configured');
+
+    const report = metrics || (this.metrics ? this.metrics : null);
+    if (!report) throw new Error('run bbl_metrics on a log first');
+
+    const { pack, chars } = this.buildAiPack({ metrics: report, level });
+
+    this.#log(
+      'info',
+      `AI 分析中：${config.model} @ ${config.baseUrl}（${pack.level} 档，${Math.round(chars / 1024)} KB 分析包；原始 .bbl 不上传）`,
+    );
+    const started = Date.now();
+    const result = await runAiAnalysis({ config, pack });
+    const elapsedMs = Date.now() - started;
+    this.#log(
+      result.ok ? 'info' : 'warn',
+      result.ok
+        ? `AI 分析完成：${result.proposals.length} 条建议（${elapsedMs} ms，模型 ${result.model || config.model}）`
+        : `AI 分析失败：${result.error}`,
+    );
+
+    const saved = {
+      ...result,
+      file: file || report.file || null,
+      elapsedMs,
+      packLevel: pack.level,
+      packChars: chars,
+      provider: { baseUrl: config.baseUrl, model: config.model },
+    };
+    if (result.ok) {
+      // Keep them for the next run so the model can see its own prior findings.
+      this.lastProposalsForAi = result.proposals;
+    }
+    return saved;
   }
 
   /**
@@ -711,20 +847,26 @@ export class Session extends EventEmitter {
       this.#log('warn', `Live values drifted since the proposal was built: ${JSON.stringify(drift.mismatches)}`);
     }
 
+    // `set` writes the live values; `save` is what persists them to EEPROM.
+    // Without it the tuning is lost on the next reboot - and the FC does reboot
+    // (MSC entry, power cycle, the verification flight's own disconnect), so the
+    // operator would fly the old values while the UI reported success.
+    // Same shape as applyBidir: the audited batch always ends with save.
+    const commandsToSend = [...screen.allowed, 'save'];
     this.#log('warn', `Writing ${screen.allowed.length} parameter(s) to the flight controller...`);
-    const result = await this.runCli(screen.allowed, { dryRun: false, kind: 'tune' });
+    const result = await this.runCli(commandsToSend, { dryRun: false, kind: 'tune' });
 
     if (!result.ok) {
       return {
         applied: false,
         dryRun: false,
-        cliSent: screen.allowed,
+        cliSent: commandsToSend,
         diff: pending?.diff || proposedDiff,
         reason: `flight controller rejected the write: ${(result.errors || []).map((e) => e.command).join(', ') || result.reason}`,
       };
     }
 
-    this.guard.recordWrite(target?.id || proposalId, screen.allowed);
+    this.guard.recordWrite(target?.id || proposalId, commandsToSend);
     this.pendingApply = null;
     this.#recordLastChange({
       proposalId: target?.id || proposalId || null,
@@ -742,7 +884,7 @@ export class Session extends EventEmitter {
     return {
       applied: true,
       dryRun: false,
-      cliSent: screen.allowed,
+      cliSent: commandsToSend,
       diff: pending?.diff || proposedDiff,
       drift: drift.ok ? null : drift.mismatches,
       preWriteBackupPath: this.guard.backupPath,

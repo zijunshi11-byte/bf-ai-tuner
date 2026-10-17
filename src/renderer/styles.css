@@ -14,29 +14,96 @@
  * 1. Tokens + reset
  * ------------------------------------------------------------------ */
 
+/* ---------------------------------------------------------------------------
+ * Theme tokens
+ *
+ * Both themes follow the Betaflight Configurator palette (its src/css/theme.css):
+ * the same amber primary (#ffbb00), the same green/orange/red status family, and
+ * a neutral surface ramp that INVERTS between themes - surface-50 is the most
+ * background-like in light and the least in dark. Text follows BF's --text:
+ * black on light, 95% grey on dark.
+ *
+ * Status colours are used as TEXT far more often than as fills in this app, so
+ * the light theme uses BF's darker shades (-600/-700) where dark uses the
+ * brighter ones (-400). --accent-fg exists because brand gold on a white
+ * surface is only ~1.7:1 and would be unreadable as text.
+ * ------------------------------------------------------------------------- */
 :root {
-  /* Betaflight Configurator palette: amber-gold brand on a dark neutral
-     surface (surface-850/900), with the configurator's green/orange/red/blue
-     status colours. */
-  --bg: #15181c;
-  --bg-1: #1b1f24;
-  --bg-2: #22262c;
-  --bg-3: #2a2f36;
-  --line: #2f343c;
-  --line-2: #3d434c;
-  --fg: #e8eaed;
-  --fg-dim: #a9b0b8;
-  --fg-mute: #7d858e;
-  --accent: #ffbb00;
-  --ok: #49c747;
-  --warn: #ff8800;
-  --crit: #e24761;
-  --info: #477ac7;
+  --bg: #1a1a1a;         /* app background (BF neutral-900) */
+  --bg-1: #242424;       /* cards (surface-300) */
+  --bg-2: #2b2b2b;       /* raised surface (neutral-850) */
+  --bg-3: #333333;       /* surface-400 */
+  --line: #3d3d3d;       /* surface-500 */
+  --line-2: #595959;     /* surface-600 */
+  --fg: #f2f2f2;         /* BF --text, dark */
+  --fg-dim: #b3b3b3;     /* surface-900 */
+  --fg-mute: #999999;    /* surface-800 */
+  --accent: #ffbb00;     /* primary-500, used for fills */
+  --accent-fg: #ffbb00;  /* primary-500, used for text */
+  --accent-hover: #ffc526;
+  --on-accent: #241a00;  /* text on gold */
+  --ok: #adf042;         /* success-400 */
+  --warn: #ff8533;       /* warning-700 (dark variant) */
+  --crit: #ff4d6d;       /* error-400, lifted so it clears AA as TEXT on dark */
+  --crit-bg: #c81e42;    /* darker red so white button text clears AA */
+  --crit-bg-hover: #b8143a;
+  --info: #6cb4ee;
+  --on-crit: #ffffff;
+
+  /* Surfaces the configurator paints by hand rather than by token. */
+  --appbar-top: #1b2430;
+  --code-bg: #0b0f15;
+  --code-fg: #cfe9f5;
+  --input-bg: #161c25;
+  --log-bg: #0a0d12;
+  --hairline: rgba(255, 255, 255, 0.035);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+  --log-info-fg: #cbd6e2;
+  --log-fatal-fg: #ffd9d6;
+  --overlay: rgba(6, 9, 13, 0.72);
+  --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   --radius: 10px;
   --card-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", sans-serif;
+}
+
+/* Light theme: same ramp, inverted. Explicitly set by the toggle. */
+[data-theme="light"] {
+  --bg: #f2f2f2;         /* surface-200 */
+  --bg-1: #ffffff;       /* surface-50 */
+  --bg-2: #ebebeb;       /* surface-300 */
+  --bg-3: #d6d6d6;       /* surface-400 */
+  --line: #d6d6d6;       /* surface-400 */
+  --line-2: #bfbfbf;     /* surface-500 */
+  --fg: #000000;         /* BF --text, light */
+  --fg-dim: #4d4d4d;     /* surface-900 */
+  --fg-mute: #666666;    /* surface-800 */
+  --accent: #ffbb00;     /* fills stay brand gold */
+  --accent-fg: #a15c00;  /* darker amber: gold is unreadable as text on white */
+  --accent-hover: #ffc526;
+  --on-accent: #241a00;
+  --ok: #4d7a00;         /* success, darkened for legibility on white */
+  --warn: #b34700;       /* warning-700 (light variant) */
+  --crit: #c10f36;       /* error-600 - already AA as text on light */
+  --crit-bg: #c10f36;    /* white on this clears AA too */
+  --crit-bg-hover: #a20c2c;
+  --info: #2f5f9e;
+  --on-crit: #ffffff;
+
+  --appbar-top: #ffffff;
+  --code-bg: #f6f6f6;
+  --code-fg: #1f1f1f;
+  --input-bg: #ffffff;
+  --log-bg: #fafafa;
+  --hairline: rgba(0, 0, 0, 0.06);
+  --hairline-strong: rgba(0, 0, 0, 0.15);
+  --log-info-fg: #333333;
+  --log-fatal-fg: #8f1029;
+  --overlay: rgba(40, 40, 40, 0.45);
+  --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+  --card-shadow: 0 4px 18px rgba(0, 0, 0, 0.10);
 }
 
 *,
@@ -95,7 +162,7 @@ textarea {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 :focus-visible {
@@ -176,7 +243,7 @@ a {
   /* The left inset keeps content clear of the macOS traffic lights, which float
      over the top-left corner when titleBarStyle is "hiddenInset". */
   padding: 10px 16px 10px 84px;
-  background: linear-gradient(180deg, #1b2430, var(--bg-1));
+  background: linear-gradient(180deg, var(--appbar-top), var(--bg-1));
   border-bottom: 1px solid var(--line);
 
   /* This bar is the window's ONLY drag handle: the system title bar is hidden,
@@ -214,7 +281,7 @@ a {
   font-weight: 700;
   letter-spacing: 0.14em;
   font-size: 15px;
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 .brand-sub {
@@ -226,6 +293,30 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Theme toggle: a normal chip that happens to be clickable. */
+.theme-toggle {
+  cursor: pointer;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-family: var(--sans);
+}
+
+.theme-toggle:hover {
+  color: var(--fg);
+  border-color: var(--line-2);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-icon {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--accent-fg);
 }
 
 .shell {
@@ -315,7 +406,7 @@ a {
 }
 
 .step.is-current .step-mark {
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 .step.is-done .step-mark,
@@ -502,7 +593,7 @@ a {
 }
 
 .th-arrow {
-  color: var(--accent);
+  color: var(--accent-fg);
   font-size: 9px;
   min-width: 8px;
   text-align: center;
@@ -651,7 +742,7 @@ a {
   border-radius: 50%;
   flex: 0 0 auto;
   background: var(--fg-mute);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--hairline-strong);
 }
 
 .sl-ok {
@@ -727,7 +818,7 @@ a {
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--accent-fg);
 }
 
 .btn:active:not(:disabled) {
@@ -753,24 +844,24 @@ a {
 
 .btn-primary {
   background: var(--accent);
-  border-color: var(--accent);
-  color: #241a00;
+  border-color: var(--accent-fg);
+  color: var(--on-accent);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #ffc526;
-  border-color: #ffc526;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-danger {
-  background: var(--crit);
-  border-color: var(--crit);
-  color: #ffffff;
+  background: var(--crit-bg);
+  border-color: var(--crit-bg);
+  color: var(--on-crit);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #c93a50;
+  background: var(--crit-bg-hover);
 }
 
 .btn-ghost {
@@ -801,7 +892,7 @@ a {
 }
 
 input[type='checkbox'] {
-  accent-color: var(--accent);
+  accent-color: var(--accent-fg);
   width: 15px;
   height: 15px;
   flex: 0 0 auto;
@@ -820,12 +911,24 @@ code.mono,
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--line);
-  background: #0b0f15;
-  color: #cfe9f5;
+  background: var(--code-bg);
+  color: var(--code-fg);
   font-family: var(--mono);
   font-size: 12.5px;
-  overflow-x: auto;
-  white-space: pre;
+  /*
+   * Wrap instead of scrolling horizontally.
+   *
+   * This used to be `overflow-x: auto; white-space: pre`. A long CLI line (e.g.
+   * `set d_min_pitch = 14  # 抬高 D_min ...`) then measured up to 455 px wider
+   * than the block and was only reachable by scrolling. macOS hides overlay
+   * scrollbars until you actually scroll, so the line simply looked truncated -
+   * the "代码块显示不全" report. `pre-wrap` + `anywhere` keeps the whole command
+   * visible on one wrapped block; the DOM text is unchanged, so the copy button
+   * and the diff table still emit the exact original text.
+   */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
 }
 
 .code-line {
@@ -895,7 +998,7 @@ code.mono,
   content: '·';
   position: absolute;
   left: 4px;
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1099,7 +1202,7 @@ code.mono,
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 .prop-sec-en {
@@ -1144,7 +1247,7 @@ code.mono,
   height: 36px;
   border-radius: 6px;
   border: 1px solid var(--line);
-  background: #161c25;
+  background: var(--input-bg);
 }
 
 .spark-cell {
@@ -1168,7 +1271,7 @@ code.mono,
   height: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0b0f15;
+  background: var(--code-bg);
 }
 
 .fft-legend {
@@ -1262,7 +1365,7 @@ code.mono,
 
 .logpanel {
   border-top: 1px solid var(--line);
-  background: #0a0d12;
+  background: var(--log-bg);
 }
 
 .log-head {
@@ -1330,7 +1433,7 @@ code.mono,
   grid-template-columns: 76px 92px minmax(0, 1fr);
   gap: 8px;
   padding: 2px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid var(--hairline);
   color: var(--fg);
 }
 
@@ -1359,7 +1462,7 @@ code.mono,
 }
 
 .lvl-info .log-msg {
-  color: #cbd6e2;
+  color: var(--log-info-fg);
 }
 
 .lvl-warn .log-msg,
@@ -1378,7 +1481,7 @@ code.mono,
 
 .lvl-fatal .log-msg,
 .lvl-fatal .log-kind {
-  color: #ffd9d6;
+  color: var(--log-fatal-fg);
   font-weight: 600;
 }
 
@@ -1394,7 +1497,7 @@ code.mono,
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(6, 9, 13, 0.72);
+  background: var(--overlay);
 }
 
 /* `hidden` must win over `display: flex`. */
@@ -1410,7 +1513,7 @@ code.mono,
   background: var(--bg-1);
   border: 1px solid var(--line-2);
   border-radius: var(--radius);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--modal-shadow);
   font-family: var(--sans);
   /* Never let the modal become part of the window drag region. */
   -webkit-app-region: no-drag;
@@ -1431,7 +1534,7 @@ code.mono,
 }
 
 .modal-body strong {
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 
 .modal-note {
@@ -1510,7 +1613,7 @@ code.mono,
 }
 
 .chip-btn:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-fg);
   color: var(--fg);
 }
 

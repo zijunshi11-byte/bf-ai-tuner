@@ -46,6 +46,11 @@ const FC_PARAMS = {
   dyn_notch_q: 300,
   dyn_notch_min_hz: 100,
   dyn_notch_max_hz: 600,
+  // A racing build that lands with hot motors: stock-rate TPA in D mode, so the
+  // high-throttle heat rule has a real read-back to step from.
+  tpa_rate: 65,
+  tpa_breakpoint: 1400,
+  tpa_mode: 'D',
   p_roll: 45,
   i_roll: 80,
   d_roll: 34,
@@ -61,7 +66,13 @@ const FC_PARAMS = {
   pid_profile: 0,
 };
 
-function makeFc() {
+/**
+ * @param {{blackboxVanishAfterSave?:boolean}} [opts]
+ *        `blackboxVanishAfterSave` models the FC rebooting on `save`: the
+ *        blackbox-config MSP command is gone until it comes back, so the
+ *        write-verification read-back fails.
+ */
+function makeFc({ blackboxVanishAfterSave = false } = {}) {
   const boardInfo = concat(
     ascii('S405'),
     u16(1),
@@ -101,7 +112,11 @@ function makeFc() {
     if (t === 'dump' || t === 'diff all') {
       return ['# Betaflight / STM32F405 (S405) 4.5.1', '# dump', 'set p_roll = 45', 'set d_roll = 34'];
     }
-    if (t === 'save') { sentCli.push(t); return ['Saving']; }
+    if (t === 'save') {
+      sentCli.push(t);
+      if (blackboxVanishAfterSave) delete handlers[MSP.MSP_BLACKBOX_CONFIG];
+      return ['Saving'];
+    }
     if (t.startsWith('set ')) {
       sentCli.push(t);
       return [t];
@@ -152,6 +167,23 @@ function propwashMetrics() {
     blocksTuning: false,
     warnings: [],
     sampleQuality: 0.9,
+  };
+}
+
+/**
+ * A log whose motors sat near full output while D carried more energy than the
+ * gyro: the high-throttle heat signature the TPA rule keys on.
+ */
+function highThrottleHeatMetrics() {
+  const m = propwashMetrics();
+  return {
+    ...m,
+    motorSaturationPct: 34.5,
+    axes: {
+      roll: { ...m.axes.roll, dTermToGyroRatio: 0.52 },
+      pitch: { ...m.axes.pitch, dTermToGyroRatio: 0.44 },
+      yaw: m.axes.yaw,
+    },
   };
 }
 
@@ -233,6 +265,61 @@ describe('bidir/RPM scoped writes and history', () => {
     assert.equal(report.id, reports[0].id);
     assert.ok(Array.isArray(report.proposals));
     assert.equal(report.metrics.file, 'synthetic.bbl');
+  });
+});
+
+/**
+ * The high-throttle heat path end to end: live TPA read-back -> proposal ->
+ * two-phase write -> cached read-back. It is the only rule whose diff depends
+ * on values the session has to carry from the FC into the analysis input.
+ */
+describe('TPA high-throttle heat', () => {
+  test("the live tpa read-back reaches the engine, so high-throttle heat is writable", async () => {
+    await connect();
+    await session.identify();
+    await session.getSettings();
+
+    const proposals = await session.proposeTune({ metrics: highThrottleHeatMetrics() });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    assert.ok(p, 'expected the high-throttle heat finding');
+    // Without plumbing tpa_rate/tpa_breakpoint into dynamics this stays
+    // advisory-only no matter what the FC actually reports.
+    assert.equal(p.safeToApply, true, 'the live read-back must make the step actionable');
+    assert.equal(p.applyGate.ok, true, p.applyGate.reasons.join('; '));
+
+    const rate = p.diff.find((d) => d.param === 'tpa_rate');
+    const bp = p.diff.find((d) => d.param === 'tpa_breakpoint');
+    assert.ok(rate && bp, `expected both TPA params, got ${p.diff.map((d) => d.param).join(', ')}`);
+    assert.equal(rate.from, 65);
+    assert.ok(rate.to > 65 && rate.to <= 75);
+    assert.equal(bp.to, 1350);
+    assert.match(p.evidence, /tpa_mode = D/, 'the read-back mode must appear in the evidence');
+  });
+
+  test('an accepted TPA proposal writes through the two-phase flow and updates the read-back', async () => {
+    await connect();
+    await session.identify();
+    await session.getSettings();
+
+    const proposals = await session.proposeTune({ metrics: highThrottleHeatMetrics() });
+    const p = proposals.find((x) => x.id === 'tpa-high-throttle-d');
+    const expected = p.diff.map((d) => `set ${d.param} = ${d.to}`);
+
+    const dry = await session.applyTune({ proposal: p });
+    assert.equal(dry.applied, false);
+    assert.ok(dry.token, 'phase 1 must issue a token');
+    assert.deepEqual(dry.wouldSend, expected);
+    assert.equal(fc.sentCli.length, 0, 'the dry run must not write');
+
+    const done = await session.applyTune({ proposal: p, token: dry.token });
+    assert.equal(done.applied, true, done.reason);
+    assert.ok(fc.sentCli.includes(expected[0]));
+    assert.ok(fc.sentCli.includes('save'), 'the confirmed write must end with save');
+
+    // The cached read-back moves, so a second analysis diffs against reality
+    // instead of re-proposing the same step.
+    assert.equal(session.settings.raw.tpa_rate, p.diff.find((d) => d.param === 'tpa_rate').to);
+    assert.equal(session.settings.raw.tpa_breakpoint, 1350);
   });
 });
 
@@ -380,8 +467,11 @@ describe('end-to-end safety path', () => {
       token: dry.token,
     });
     assert.equal(applied.applied, true, `write failed: ${applied.reason}`);
-    assert.deepEqual(applied.cliSent, dry.wouldSend);
+    // The dry run lists the `set` lines; the confirmed write is those plus the
+    // `save` that persists them to EEPROM.
+    assert.deepEqual(applied.cliSent, [...dry.wouldSend, 'save']);
     assert.ok(fc.sentCli.length >= 1, 'the FC should have received the commands');
+    assert.ok(fc.sentCli.includes('save'), 'a tuning write must persist with save');
     // Propwash is fixed through the D term. D_min is preferred (it dampens the
     // low-throttle part of the flight without the steady-state D heat), falling
     // back to static D when there is no D_min to work with.
@@ -471,5 +561,63 @@ describe('end-to-end safety path', () => {
     const logging = await session.blackboxConfig({ rate: 2000, device: 'auto', dryRun: false });
     assert.equal(logging.applied, true);
     assert.ok(fc.sentCli.some((c) => c === 'set blackbox_sample_rate = 4'));
+    assert.ok(fc.sentCli.includes('save'), 'a logging write must persist with save');
+  });
+
+  test('a blackbox write that landed stays reported as applied when the post-reboot read-back fails', async () => {
+    // The FC reboots on `save`, so the verification read can race the boot.
+    fc = makeFc({ blackboxVanishAfterSave: true });
+    await connect();
+    await session.identify();
+
+    const logging = await session.blackboxConfig({ rate: 2000, device: 'auto', dryRun: false });
+
+    assert.equal(logging.applied, true, 'the write itself succeeded');
+    assert.ok(fc.sentCli.includes('save'));
+    assert.equal(logging.verified, false, 'a failed read-back must not claim verification');
+    assert.equal(logging.readBack, null);
+    assert.ok(
+      logging.warnings.some((w) => /读回失败/.test(w)),
+      `expected a read-back warning, got: ${JSON.stringify(logging.warnings)}`,
+    );
+  });
+});
+
+describe('mandatory backup path', () => {
+  test('backup() writes a named snapshot and unlocks writes', async () => {
+    await connect();
+    await session.identify();
+
+    assert.equal(session.guard.status.backupDone, false, 'nothing may be written before a backup');
+
+    // Regression: this path used to call a non-existent guard method
+    // (`recordBackup`), so every backup failed with
+    // "this.guard.recordBackup is not a function" and writes stayed locked.
+    const entry = await session.backup({ note: 'regression' });
+
+    assert.equal(entry.ok, true);
+    assert.match(entry.id, /regression/, 'the note must appear in the backup name');
+    assert.ok(existsSync(entry.dir), 'the snapshot directory must exist on disk');
+    assert.match(entry.id, /_Test-Racer-F405_|_S405_/, 'the board must appear in the name');
+
+    const status = session.guard.status;
+    assert.equal(status.backupDone, true, 'the guard must record the backup');
+    assert.equal(status.backupPath, entry.dir);
+
+    const { backups } = session.listBackups();
+    assert.equal(backups.length, 1);
+    assert.equal(backups[0].id, entry.id);
+  });
+
+  test('backup() records the pending diff in the rollback package', async () => {
+    await connect();
+    await session.identify();
+
+    const entry = await session.backup({ note: 'with-diff', pendingDiff: ['set d_yaw = 3'] });
+    const stored = session.backupStore.get(entry.id);
+    assert.ok(stored, 'the snapshot must be readable back');
+    assert.equal(stored.meta.restoreKind, 'diff-all');
+    assert.deepEqual(stored.package.pendingDiff, ['set d_yaw = 3']);
+    assert.deepEqual(stored.package.summary.params, ['d_yaw']);
   });
 });

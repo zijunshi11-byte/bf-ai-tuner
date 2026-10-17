@@ -51,6 +51,10 @@ const CH = {
   TUNE_EVALUATE: 'tune:evaluate',
   TUNE_PROPOSE: 'tune:propose',
   TUNE_APPLY: 'tune:apply',
+  AI_GET_CONFIG: 'ai:get_config',
+  AI_SET_CONFIG: 'ai:set_config',
+  AI_ANALYZE: 'ai:analyze',
+  AI_EXPORT_PACK: 'ai:export_pack',
   SAFETY_STATUS: 'safety:status',
   SAFETY_ACK: 'safety:ack',
   SAFETY_FORCE_TRUST: 'safety:force_trust',
@@ -145,6 +149,18 @@ const api = {
     apply: (args = {}) => invoke(CH.TUNE_APPLY, args),
     /** Re-analyse a post-change flight and judge better / worse. */
     evaluate: (args = {}) => invoke(CH.TUNE_EVALUATE, args),
+  },
+
+  /**
+   * Optional AI agent layer. The settings form is the only place an API key is
+   * entered; it is stored in userData with mode 0600 and is never echoed back.
+   */
+  ai: {
+    getConfig: () => invoke(CH.AI_GET_CONFIG),
+    setConfig: (patch = {}) => invoke(CH.AI_SET_CONFIG, patch),
+    analyze: (args = {}) => invoke(CH.AI_ANALYZE, args),
+    /** Save the full pack + prompt to a file for use in any other assistant. */
+    exportPack: (args = {}) => invoke(CH.AI_EXPORT_PACK, args),
   },
 
   history: {
