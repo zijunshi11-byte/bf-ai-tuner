@@ -25,7 +25,6 @@ export const TF_TARGETS = {
   bandwidthHz: 45,
   phaseMarginDeg: 50,
   lowFreqErrorDb: 0,
-  defaultFilterHz: 150,
 };
 
 function round(value, digits = 2) {
@@ -146,6 +145,11 @@ export function computeLowFreqError(frequencies, magnitude, coherence) {
   return count > 0 ? round(sum / count) : 0;
 }
 
+/**
+ * First frequency above 20 Hz where tracking coherence falls below 0.5. Despite
+ * the upstream name this is a *coherence* floor, not a gyro noise floor: it is
+ * reported as evidence only and must never drive a filter change (#5258).
+ */
 export function findNoiseFloor(frequencies, coherence) {
   for (let k = 0; k < frequencies.length; k++) {
     if (frequencies[k] > 20 && coherence[k] < 0.5) return round(frequencies[k]);
@@ -203,7 +207,7 @@ export function computeGainScales(
   targetBandwidthHz = TF_TARGETS.bandwidthHz,
   targetPhaseMarginDeg = TF_TARGETS.phaseMarginDeg,
 ) {
-  const { bandwidthHz, gainCrossoverHz, lowFreqErrorDb, noiseFloorHz, resonantPeakDb } = metrics;
+  const { bandwidthHz, gainCrossoverHz, lowFreqErrorDb, resonantPeakDb } = metrics;
 
   let piScale = bandwidthHz > 0 ? targetBandwidthHz / bandwidthHz : 1;
 
@@ -235,7 +239,13 @@ export function computeGainScales(
     dScale *= 0.95;
   }
 
-  const filterScale = noiseFloorHz > 0 ? noiseFloorHz / TF_TARGETS.defaultFilterHz : 1;
+  // Deliberately NO filter scale. Upstream derives a D-term filter scale from
+  // `noiseFloorHz`, but that number is where setpoint->gyro *coherence* drops,
+  // not the gyro/motor noise floor that filtering exists to suppress: on a clean
+  // log coherence never drops, the scale clamps to its maximum and D-term
+  // filtering is stripped - the cause of betaflight-configurator#5258 (flyaway
+  // on arm). Filter advice comes only from the measured noise spectrum
+  // (ruleFilterShaping / ruleRpmHealth), never from a tracking fit.
 
   // Conservative per-round bounds: the transfer-function authority is strong,
   // but this tuner still applies only one moderate step per session.
@@ -244,7 +254,6 @@ export function computeGainScales(
     iScale: clamp(iScale, 0.93, 1.07),
     dScale: clamp(dScale, 0.93, 1.07),
     ffScale: clamp(ffScale, 0.93, 1.07),
-    filterScale: clamp(filterScale, 0.9, 1.1),
   };
 }
 

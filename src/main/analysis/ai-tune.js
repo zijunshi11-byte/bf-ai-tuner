@@ -587,10 +587,23 @@ function ruleTransferFunction(metrics, pid) {
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
 
-  const piScale = avgScale('piScale');
+  let piScale = avgScale('piScale');
   const iScale = avgScale('iScale');
   const dScale = avgScale('dScale');
-  const ffScale = avgScale('ffScale');
+  let ffScale = avgScale('ffScale');
+
+  // Joint stability guard (betaflight-configurator#5258 item 2): each scale is
+  // bounded on its own, but raising P/FF on a loop that is already short of
+  // phase margin trades the remaining margin for bandwidth. Below the margin
+  // target only damping (D) may go up; P/FF increases stand down this round.
+  const worstMargin = Math.min(...axisData
+    .filter((d) => grouped.axes.includes(d.axis))
+    .map((d) => d.metrics.phaseMarginDeg ?? Infinity));
+  const marginShort = Number.isFinite(worstMargin) && worstMargin < TF_TARGETS.phaseMarginDeg - 5;
+  if (marginShort) {
+    piScale = Math.min(piScale, 1);
+    ffScale = Math.min(ffScale, 1);
+  }
 
   const diff = [];
   const addScaled = (term, prefix, scale, minVal, maxVal) => {
@@ -631,7 +644,8 @@ function ruleTransferFunction(metrics, pid) {
         `增益交界频率 ${worst.gainCrossoverHz} Hz，相位裕度 ${worst.phaseMarginDeg}°（目标 ${TF_TARGETS.phaseMarginDeg}°），` +
         `2–10 Hz 低频误差 ${worst.lowFreqErrorDb} dB，谐振峰 ${worst.resonantPeakDb} dB` +
         (worst.resonantFreqHz > 0 ? ` @ ${worst.resonantFreqHz} Hz` : '') +
-        `，5–100 Hz 平均相干度 ${worst.meanCoherence}。`,
+        `，5–100 Hz 平均相干度 ${worst.meanCoherence}。` +
+        (marginShort ? `相位裕度 ${worstMargin}° 低于目标，本轮只允许加阻尼，不提高 P/FF。` : ''),
       cli: diff.map((d) => `set ${d.param} = ${d.to}`),
       why:
         '基于 setpoint→gyro 的 Welch 互谱估计闭环传递函数，从带宽、相位裕度、低频跟踪三方面同时确定 P/I/D/FF 的缩放方向；' +

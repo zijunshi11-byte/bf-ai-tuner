@@ -1683,7 +1683,7 @@ test('transfer-function rule proposes conservative P/FF when scales fire', () =>
         metrics: {
           bandwidthHz: 35,
           gainCrossoverHz: 30,
-          phaseMarginDeg: 42,
+          phaseMarginDeg: 52,
           lowFreqErrorDb: -1,
           resonantPeakDb: 2,
           resonantFreqHz: 95,
@@ -1703,6 +1703,65 @@ test('transfer-function rule proposes conservative P/FF when scales fire', () =>
   assert.ok(tf.diff.every((d) => d.to >= 0 && d.to <= 250));
   assert.match(tf.evidence, /-3dB 带宽/);
   assert.match(tf.evidence, /相位裕度/);
+});
+
+test('transfer-function rule never raises P/FF when phase margin is short (#5258 joint guard)', () => {
+  const metrics = metricsWith({
+    roll: {
+      transfer: {
+        coherent: true,
+        scales: { piScale: 1.07, iScale: 1, dScale: 1.07, ffScale: 1.07 },
+        metrics: {
+          bandwidthHz: 30, gainCrossoverHz: 28, phaseMarginDeg: 38, lowFreqErrorDb: 0,
+          resonantPeakDb: 1, resonantFreqHz: 0, noiseFloorHz: 0, meanCoherence: 0.9,
+        },
+      },
+    },
+  });
+  const proposals = proposeTune({ metrics, currentPid: PID_WITH_F, currentFilter: HEALTHY_FILTER });
+  const tf = proposals.find((p) => p.id === 'tf-tune-roll');
+  assert.ok(tf, 'D may still go up on a margin-short loop');
+  for (const d of tf.diff) {
+    if (/^(p|f)_/.test(d.param)) assert.ok(d.to <= d.from, `${d.param} must not rise: ${d.from} -> ${d.to}`);
+  }
+  assert.ok(tf.diff.some((d) => d.param === 'd_roll' && d.to > d.from));
+  assert.match(tf.evidence, /相位裕度 38° 低于目标/);
+});
+
+test('transfer-function scales never carry a filter scale, even on a perfectly coherent log (#5258)', () => {
+  // A perfectly clean tracking fit: coherence 1 everywhere, so the coherence
+  // "noise floor" never appears. Upstream turned exactly this into a doubled
+  // D-term LPF cutoff.
+  const n = 64;
+  const tf = {
+    frequencies: Array.from({ length: n }, (_, i) => i * 8),
+    magnitude: Array.from({ length: n }, (_, i) => (i * 8 < 60 ? 1 : 0.4)),
+    phase: Array.from({ length: n }, (_, i) => -i * 8 * 0.9),
+    coherence: Array.from({ length: n }, () => 1),
+  };
+  const metrics = extractTfMetrics(tf);
+  const scales = computeGainScales(metrics, tf);
+  assert.deepEqual(Object.keys(scales).sort(), ['dScale', 'ffScale', 'iScale', 'piScale']);
+});
+
+test('transfer-function rule emits only P/I/D/FF gains, never a filter parameter', () => {
+  const metrics = metricsWith({
+    roll: {
+      transfer: {
+        coherent: true,
+        // A stale or hostile scale object must not smuggle a filter change in.
+        scales: { piScale: 1.07, iScale: 1.07, dScale: 1.07, ffScale: 1.07, filterScale: 2 },
+        metrics: {
+          bandwidthHz: 30, gainCrossoverHz: 28, phaseMarginDeg: 60, lowFreqErrorDb: -2,
+          resonantPeakDb: 0, resonantFreqHz: 0, noiseFloorHz: 0, meanCoherence: 0.98,
+        },
+      },
+    },
+  });
+  const proposals = proposeTune({ metrics, currentPid: PID_WITH_F, currentFilter: HEALTHY_FILTER });
+  const tf = proposals.find((p) => p.id === 'tf-tune-roll');
+  assert.ok(tf);
+  assert.ok(tf.diff.every((d) => /^[pidf]_(roll|pitch|yaw)$/.test(d.param)), JSON.stringify(tf.diff));
 });
 
 test('transfer-function rule stands down when coherence is low', () => {
