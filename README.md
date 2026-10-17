@@ -188,7 +188,13 @@ against firmware source (`src/main/msp/msp.c`, `src/main/blackbox/blackbox.h`,
 order and the `rate = 1 << sample_rate` relationship in particular are taken
 from the firmware, not inferred.
 
-Licence: GPL-3.0-or-later, inherited from the upstream project.
+## License
+
+GPL-3.0-or-later — see [LICENSE](LICENSE). BF-AITuner is derived from
+[Betaflight Configurator](https://github.com/betaflight/betaflight-configurator)
+(GPL-3.0) and includes modules copied from it under `vendor/betaflight/`;
+parts of the transfer-function tuning are ported from BetaflightAssistant
+(GPL-3.0-or-later). Any redistribution or fork must stay under the GPL.
 
 ---
 
